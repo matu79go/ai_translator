@@ -32,33 +32,60 @@
 - [x] キーワード予測レイヤー（LLM不要の即時ヒント表示）
 - [x] 非ブロッキングLLM呼び出し（Deepgram keepalive問題解決）
 
+### 2025-01-20 セッション完了 ✅
+- [x] **is_final時のプロンプト切り替え（案D）**
+  - partial（進行中）: SPEED プロンプト（dialogue_act → intent_label → slots → full_translation）
+  - is_final（確定時）: QUALITY プロンプト（文脈分析重視）
+- [x] **マルチモデル対応**
+  - GPT-4o-mini / Gemini 2.5 Flash Lite 切り替えUI
+  - サマリー生成も選択モデルを使用
+- [x] **HYBRID / FINAL_ONLY モード切り替え**
+  - HYBRID: partial + final 両方処理（速度重視）
+  - FINAL_ONLY: is_final のみ処理（品質重視）
+- [x] **統合タイムラインUI**
+  - 意図ラベル + 翻訳を1つのカードにまとめて表示
+  - partial → final の上書き表示
+- [x] **短文スキップ機能**
+  - min_words=5 で断片的なpartialをスキップ（ノイズ軽減）
+- [x] **推測翻訳（Speculative Translation）実験機能**
+  - `/experimental` ルート追加
+  - dialogue_act + intent_label から推測訳を先行生成
+  - 推測訳は確定訳より約500ms〜1秒早く表示
+  - 「別々表示」「上書き表示」の切り替えUI
+
 ## 現在の機能
 
 | 機能 | 説明 | レイテンシ |
 |------|------|-----------|
-| 意図履歴 | 話者の意図をリアルタイム表示・蓄積 | ~500ms |
-| 翻訳履歴 | リアルタイム翻訳を蓄積表示 | ~500-800ms |
+| 統合タイムライン | 意図+翻訳を1カードで表示 | ~500-800ms |
+| 推測翻訳 | dialogue_act+intent_labelから先行推測 | ~500ms早い |
 | 会話サマリー | 全体の要約（画面下固定） | 沈黙1.5秒後 |
 | トランスクリプト | 音声認識結果 | ~200ms |
 | 予測ヒント | キーワードベースの即時予測 | ~0ms |
+| モデル切替 | GPT-4 / Gemini リアルタイム切替 | - |
+| モード切替 | HYBRID / FINAL_ONLY | - |
+
+### ルート構成
+
+| URL | 説明 |
+|-----|------|
+| `/` | 完成版（統合タイムライン） |
+| `/experimental` | 推測翻訳実験（別々/上書き表示切替） |
 
 ## 未完了の作業
 
-### 🔴 次回最優先: is_final時のみJSON順序を戻す（案D）
-- [ ] **追加コストなしで翻訳品質向上**
-  - partial（進行中）: 現状維持（intent_label → full_translation を先に出力、速度重視）
-  - is_final（確定時）: 従来のJSON順序で出力（dialogue_act → slots → ... → full_translation、品質重視）
-  - 実装: `_call_llm_streaming()` で `is_final` フラグに応じてプロンプトを切り替え
-  - 期待効果: 速度を維持しつつ、確定時は文脈を考慮した正確な翻訳
-
-### 翻訳品質の向上（その他の案）
+### 翻訳品質の向上
+- [x] ~~案D: is_final時のみJSON順序を戻す~~ → 完了
+- [x] ~~Gemini 2.5 Flash への切り替え~~ → 完了（切り替え可能に）
 - [ ] 案B: 1回で2つの翻訳を出力（quick_translation + full_translation）
 - [ ] 案C: is_final時のみ別途高品質翻訳API呼び出し
 - [ ] プロンプト改善（翻訳品質を重視する指示追加）
-- [ ] Gemini 2.5 Flash への切り替え（速度維持で品質向上）
+
+### 推測翻訳の改善
+- [ ] 推測訳の精度向上（より多くの文脈を考慮）
+- [ ] 音声読み上げ(TTS)対応（is_final時に読み上げ）
 
 ### 追加改善案
-- [ ] Gemini 2.5 Flash への切り替え検討
 - [ ] 日本語→英語の双方向対応
 - [ ] 話者識別（複数人会話対応）
 - [ ] オフライン対応（ローカルLLM検討）
@@ -72,6 +99,7 @@
 - FastAPI + WebSockets
 - Deepgram SDK (nova-2モデル)
 - OpenAI API (gpt-4o-mini, Streaming)
+- Google Generative AI (gemini-2.5-flash-lite)
 
 ### Frontend
 - React 18 + TypeScript
@@ -104,6 +132,7 @@ npm run dev
 ```
 DEEPGRAM_API_KEY=your_deepgram_key
 OPENAI_API_KEY=your_openai_key
+GOOGLE_API_KEY=your_google_api_key
 ```
 
 ## 評価指標（CLAUDE.mdより）
