@@ -3,7 +3,7 @@ import json
 import os
 import re
 import time
-from typing import Optional
+from typing import Optional, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -14,7 +14,15 @@ from deepgram import (
     LiveTranscriptionEvents,
     LiveOptions,
 )
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
+
+# Gemini SDK (optional)
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    genai = None
 
 load_dotenv()
 
@@ -30,8 +38,21 @@ app.add_middleware(
 
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+# OpenAI clients (async for GPT-4, sync for GPT-5)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+openai_client_sync = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+# Gemini client
+if GEMINI_AVAILABLE and GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+    gemini_model = genai.GenerativeModel("gemini-2.5-flash-lite")
+else:
+    gemini_model = None
+
+# LLMモデル型
+LLMModel = Literal["gpt4", "gpt5", "gemini"]
 
 # キーワード→トピック予測マッピング（即時応答用）
 KEYWORD_TOPICS = {
@@ -77,24 +98,56 @@ KEYWORD_TOPICS = {
     "let's": "提案",
 }
 
-INTENT_SYSTEM_PROMPT = """あなたはリアルタイム対話支援AIです。
-入力される英語から、話者の「意図」と「重要な単語」を即座に抽出してください。
+# バランス重視プロンプト: 最低限の分析→翻訳（partial用）
+INTENT_SYSTEM_PROMPT_SPEED = """あなたはリアルタイム同時通訳AIです。
+英語の発話をリアルタイムで日本語に翻訳します。
 
-ルール:
-- 完璧な文章になるのを待たず、今ある情報から予測してください
-- 出力は必ず指定されたJSON形式で行ってください
+処理順序（重要）:
+1. まず対話行為(dialogue_act)を判断
+2. 意図(intent_label)を抽出
+3. 重要情報(slots)を特定
+4. 上記を考慮して翻訳(full_translation)を生成
+
+翻訳ルール:
+- 自然で流暢な日本語に翻訳してください
+- 文が途中でも、現時点で言いたいことを推測して完結した日本語にしてください
+
+その他のルール:
 - intent_labelは日本語で10文字以内
-- 確信度が低い場合は confidence を低く設定してください
+- 出力は必ず指定されたJSON形式で行ってください
 
 出力JSON形式（この順序で出力すること）:
 {
+  "dialogue_act": "QUESTION | PROPOSAL | AGREEMENT | DISAGREEMENT | STATEMENT | GREETING | OTHER",
   "intent_label": "短い日本語ラベル",
-  "full_translation": "日本語訳",
+  "slots": {"when": "", "who": "", "where": "", "what": ""},
+  "full_translation": "文脈を考慮した自然な日本語訳",
+  "key_terms": ["重要な単語"],
+  "confidence": 0.0〜1.0,
+  "is_meaning_stable": true/false
+}
+
+注意: JSON以外の文字は出力しないでください。"""
+
+# 品質重視プロンプト: 文脈を先に分析してから翻訳（is_final用）
+INTENT_SYSTEM_PROMPT_QUALITY = """あなたはリアルタイム対話支援AIです。
+入力される英語から、話者の「意図」と「重要な単語」を抽出し、正確な翻訳を行ってください。
+
+ルール:
+- まず対話行為(dialogue_act)と重要情報(slots)を分析してください
+- その分析結果を踏まえて、文脈に即した正確な翻訳を行ってください
+- 出力は必ず指定されたJSON形式で行ってください
+- intent_labelは日本語で10文字以内
+
+出力JSON形式（この順序で出力すること）:
+{
   "dialogue_act": "QUESTION | PROPOSAL | AGREEMENT | DISAGREEMENT | STATEMENT | GREETING | OTHER",
   "slots": {"when": "", "who": "", "where": "", "what": ""},
   "key_terms": ["重要な単語"],
   "confidence": 0.0〜1.0,
-  "is_meaning_stable": true/false
+  "is_meaning_stable": true/false,
+  "intent_label": "短い日本語ラベル",
+  "full_translation": "文脈を考慮した正確な日本語訳"
 }
 
 注意: JSON以外の文字は出力しないでください。"""
@@ -142,11 +195,13 @@ class KeywordPredictor:
 
 
 class SummaryGenerator:
-    """会話サマリーを生成するクラス（ストリーミング対応）"""
+    """会話サマリーを生成するクラス（ストリーミング対応、マルチモデル）"""
 
-    def __init__(self, websocket: WebSocket, silence_threshold_ms: int = 1500):
+    def __init__(self, websocket: WebSocket, silence_threshold_ms: int = 1500,
+                 model: LLMModel = "gpt4"):
         self.websocket = websocket
         self.silence_threshold_ms = silence_threshold_ms
+        self.model = model  # "gpt4" or "gemini"
         self.transcript_history: list[str] = []
         self.pending_summary_task: Optional[asyncio.Task] = None
         self.last_summary_hash = ""
@@ -167,7 +222,10 @@ class SummaryGenerator:
         await asyncio.sleep(self.silence_threshold_ms / 1000)
 
         if len(self.transcript_history) >= 2:
-            await self._generate_summary_streaming()
+            if self.model == "gemini":
+                await self._generate_summary_gemini()
+            else:
+                await self._generate_summary_streaming()
 
     async def _generate_summary_streaming(self):
         """ストリーミングでサマリーを生成"""
@@ -231,13 +289,64 @@ class SummaryGenerator:
         except Exception as e:
             print(f"[Summary] Error: {type(e).__name__}: {e}")
 
+    async def _generate_summary_gemini(self):
+        """Geminiでサマリーを生成"""
+        if not gemini_model:
+            return
+
+        current_hash = hash(tuple(self.transcript_history))
+        if current_hash == self.last_summary_hash:
+            return
+        self.last_summary_hash = current_hash
+
+        all_text = "\n".join(self.transcript_history)
+        print(f"[Summary-Gemini] Generating summary for {len(self.transcript_history)} utterances")
+
+        try:
+            full_prompt = f"{SUMMARY_SYSTEM_PROMPT}\n\n以下の発話を要約してください:\n\n{all_text}"
+
+            response = await asyncio.to_thread(
+                lambda: gemini_model.generate_content(
+                    full_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.3,
+                        max_output_tokens=300,
+                    ),
+                )
+            )
+
+            full_response = response.text if response.text else ""
+            print(f"[Summary-Gemini] Response received", flush=True)
+
+            # JSONを抽出
+            try:
+                json_match = re.search(r'\{[\s\S]*\}', full_response)
+                if json_match:
+                    final_data = json.loads(json_match.group())
+                    await self.websocket.send_json({
+                        "type": "summary",
+                        "summary": final_data.get("summary", ""),
+                        "topics": final_data.get("topics", []),
+                        "streaming": False,
+                    })
+            except json.JSONDecodeError:
+                print(f"[Summary-Gemini] Failed to parse response: {full_response[:100]}")
+
+        except Exception as e:
+            print(f"[Summary-Gemini] Error: {type(e).__name__}: {e}")
+
 
 class IntentEstimator:
-    """意図推定を行うクラス（ストリーミング対応）"""
+    """意図推定を行うクラス（ストリーミング対応、マルチモデル）"""
 
-    def __init__(self, websocket: WebSocket, debounce_ms: int = 300):
+    def __init__(self, websocket: WebSocket, debounce_ms: int = 300,
+                 is_final_only: bool = False, min_words: int = 5,
+                 model: LLMModel = "gpt4"):
         self.websocket = websocket
         self.debounce_ms = debounce_ms
+        self.is_final_only = is_final_only  # Trueの場合、is_final=Trueのみ処理
+        self.min_words = min_words  # partial時の最小単語数
+        self.model = model  # "gpt4", "gpt5", "gemini"
         self.last_text = ""
         self.last_call_time = 0
         self.pending_task: Optional[asyncio.Task] = None
@@ -245,7 +354,12 @@ class IntentEstimator:
 
     async def estimate(self, text: str, is_final: bool):
         """テキストから意図を推定（ストリーミング）"""
-        if not openai_client or not text.strip():
+        # モデルに応じてクライアントをチェック
+        if self.model in ("gpt4", "gpt5") and not openai_client:
+            return
+        if self.model == "gemini" and not gemini_model:
+            return
+        if not text.strip():
             return
 
         if text == self.last_text:
@@ -253,12 +367,24 @@ class IntentEstimator:
 
         self.last_text = text
         current_time = time.time() * 1000
+        word_count = len(text.split())
 
         if is_final:
             self.context_history.append(text)
             if len(self.context_history) > 5:
                 self.context_history.pop(0)
             await self._call_llm_streaming(text, is_final)
+            return
+
+        # partial（進行中）の処理
+        # is_final_onlyモードの場合、partialはスキップ
+        if self.is_final_only:
+            print(f"[LLM] Skipped partial (is_final_only mode): {text[:30]}...", flush=True)
+            return
+
+        # 短いテキストはスキップ（断片的な翻訳を防ぐ）
+        if word_count < self.min_words:
+            print(f"[LLM] Skipped partial ({word_count} words < {self.min_words}): {text[:30]}...", flush=True)
             return
 
         time_since_last = current_time - self.last_call_time
@@ -280,9 +406,21 @@ class IntentEstimator:
 
     async def _call_llm_streaming(self, text: str, is_final: bool):
         """ストリーミングでLLMを呼び出して意図を推定"""
+        if self.model == "gemini":
+            await self._call_gemini(text, is_final)
+        elif self.model == "gpt5":
+            await self._call_gpt5(text, is_final)
+        else:
+            await self._call_gpt4(text, is_final)
+
+    async def _call_gpt4(self, text: str, is_final: bool):
+        """GPT-4o-mini APIでストリーミング"""
         self.last_call_time = time.time() * 1000
         start_time = time.time()
-        print(f"[LLM] Start streaming for: {text[:30]}...", flush=True)
+
+        system_prompt = INTENT_SYSTEM_PROMPT_QUALITY if is_final else INTENT_SYSTEM_PROMPT_SPEED
+        mode = "QUALITY" if is_final else "SPEED"
+        print(f"[GPT-4] Start streaming [{mode}] for: {text[:30]}...", flush=True)
 
         context = ""
         if self.context_history:
@@ -294,7 +432,7 @@ class IntentEstimator:
             stream = await openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": INTENT_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
@@ -311,59 +449,151 @@ class IntentEstimator:
                 if chunk.choices[0].delta.content:
                     if first_chunk_time is None:
                         first_chunk_time = time.time()
-                        print(f"[LLM] First chunk received in {(first_chunk_time - start_time)*1000:.0f}ms", flush=True)
+                        print(f"[GPT-4] First chunk in {(first_chunk_time - start_time)*1000:.0f}ms", flush=True)
 
                     full_response += chunk.choices[0].delta.content
-
-                    # 部分的なJSONの解析を試みる（intent_labelが取得できたら即送信）
+                    await self._process_streaming_chunk(
+                        full_response, text, sent_intent_partial, sent_translation_partial
+                    )
                     if not sent_intent_partial and '"intent_label"' in full_response:
-                        try:
-                            match = re.search(r'"intent_label"\s*:\s*"([^"]+)"', full_response)
-                            if match:
-                                partial_intent = match.group(1)
-                                print(f"[LLM] Sending partial intent: {partial_intent}", flush=True)
-                                await self.websocket.send_json({
-                                    "type": "intent_partial",
-                                    "intent_label": partial_intent,
-                                    "source_text": text,
-                                })
-                                sent_intent_partial = True
-                        except:
-                            pass
-
-                    # full_translationが取得できたら即送信
+                        sent_intent_partial = True
                     if not sent_translation_partial and '"full_translation"' in full_response:
-                        try:
-                            match = re.search(r'"full_translation"\s*:\s*"([^"]+)"', full_response)
-                            if match:
-                                partial_translation = match.group(1)
-                                print(f"[LLM] Sending partial translation: {partial_translation[:30]}...", flush=True)
-                                await self.websocket.send_json({
-                                    "type": "translation_partial",
-                                    "translation": partial_translation,
-                                    "source_text": text,
-                                })
-                                sent_translation_partial = True
-                        except:
-                            pass
+                        sent_translation_partial = True
 
-            # 最終結果を送信
-            end_time = time.time()
-            print(f"[LLM] Complete in {(end_time - start_time)*1000:.0f}ms", flush=True)
+            await self._finalize_response(full_response, text, is_final, start_time, "GPT-4")
 
+        except Exception as e:
+            print(f"[GPT-4] Error: {type(e).__name__}: {e}")
+
+    async def _call_gpt5(self, text: str, is_final: bool):
+        """GPT-5 APIでストリーミング（新しいresponses API）"""
+        self.last_call_time = time.time() * 1000
+        start_time = time.time()
+
+        system_prompt = INTENT_SYSTEM_PROMPT_QUALITY if is_final else INTENT_SYSTEM_PROMPT_SPEED
+        mode = "QUALITY" if is_final else "SPEED"
+        print(f"[GPT-5] Start streaming [{mode}] for: {text[:30]}...", flush=True)
+
+        context = ""
+        if self.context_history:
+            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+
+        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+
+        try:
+            # GPT-5 uses responses.stream API (sync, run in thread)
+            def run_gpt5_stream():
+                full_response = ""
+                stream = openai_client_sync.responses.stream(
+                    model="gpt-5-mini",
+                    input=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.3,
+                    max_output_tokens=500,
+                )
+                for event in stream:
+                    if event.type == "response.output_text.delta":
+                        full_response += event.delta
+                return full_response
+
+            full_response = await asyncio.to_thread(run_gpt5_stream)
+            print(f"[GPT-5] Response received in {(time.time() - start_time)*1000:.0f}ms", flush=True)
+
+            await self._finalize_response(full_response, text, is_final, start_time, "GPT-5")
+
+        except Exception as e:
+            print(f"[GPT-5] Error: {type(e).__name__}: {e}")
+
+    async def _call_gemini(self, text: str, is_final: bool):
+        """Gemini APIで呼び出し"""
+        self.last_call_time = time.time() * 1000
+        start_time = time.time()
+
+        system_prompt = INTENT_SYSTEM_PROMPT_QUALITY if is_final else INTENT_SYSTEM_PROMPT_SPEED
+        mode = "QUALITY" if is_final else "SPEED"
+        print(f"[Gemini] Start [{mode}] for: {text[:30]}...", flush=True)
+
+        context = ""
+        if self.context_history:
+            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+
+        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+        full_prompt = f"{system_prompt}\n\n{user_prompt}"
+
+        try:
+            # Gemini API (非ストリーミング、asyncioで実行)
+            response = await asyncio.to_thread(
+                lambda: gemini_model.generate_content(
+                    full_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.3,
+                        max_output_tokens=1000,
+                    ),
+                )
+            )
+
+            full_response = response.text if response.text else ""
+            print(f"[Gemini] Response received in {(time.time() - start_time)*1000:.0f}ms", flush=True)
+
+            await self._finalize_response(full_response, text, is_final, start_time, "Gemini")
+
+        except Exception as e:
+            print(f"[Gemini] Error: {type(e).__name__}: {e}")
+
+    async def _process_streaming_chunk(self, full_response: str, text: str,
+                                        sent_intent: bool, sent_translation: bool):
+        """ストリーミングチャンクを処理して部分結果を送信"""
+        if not sent_intent and '"intent_label"' in full_response:
             try:
-                intent_data = json.loads(full_response)
+                match = re.search(r'"intent_label"\s*:\s*"([^"]+)"', full_response)
+                if match:
+                    partial_intent = match.group(1)
+                    print(f"[LLM] Sending partial intent: {partial_intent}", flush=True)
+                    await self.websocket.send_json({
+                        "type": "intent_partial",
+                        "intent_label": partial_intent,
+                        "source_text": text,
+                    })
+            except:
+                pass
+
+        if not sent_translation and '"full_translation"' in full_response:
+            try:
+                match = re.search(r'"full_translation"\s*:\s*"([^"]+)"', full_response)
+                if match:
+                    partial_translation = match.group(1)
+                    print(f"[LLM] Sending partial translation: {partial_translation[:30]}...", flush=True)
+                    await self.websocket.send_json({
+                        "type": "translation_partial",
+                        "translation": partial_translation,
+                        "source_text": text,
+                    })
+            except:
+                pass
+
+    async def _finalize_response(self, full_response: str, text: str,
+                                  is_final: bool, start_time: float, provider: str):
+        """最終レスポンスを処理して送信"""
+        end_time = time.time()
+        print(f"[{provider}] Complete in {(end_time - start_time)*1000:.0f}ms", flush=True)
+
+        try:
+            # JSONを抽出（前後の余分な文字を除去）
+            json_match = re.search(r'\{[\s\S]*\}', full_response)
+            if json_match:
+                intent_data = json.loads(json_match.group())
                 await self.websocket.send_json({
                     "type": "intent",
                     "data": intent_data,
                     "source_text": text,
                     "is_final": is_final,
                 })
-            except json.JSONDecodeError:
-                print(f"[LLM] Failed to parse: {full_response[:100]}")
-
-        except Exception as e:
-            print(f"[LLM] Error: {type(e).__name__}: {e}")
+            else:
+                print(f"[{provider}] No JSON found in response: {full_response[:100]}")
+        except json.JSONDecodeError:
+            print(f"[{provider}] Failed to parse: {full_response[:100]}")
 
 
 class TranscriptionManager:
@@ -373,9 +603,26 @@ class TranscriptionManager:
         self.websocket = websocket
         self.dg_connection = None
         self.is_running = False
-        self.intent_estimator = IntentEstimator(websocket)
+        self.intent_estimator = IntentEstimator(websocket, min_words=5)
         self.summary_generator = SummaryGenerator(websocket)
         self.keyword_predictor = KeywordPredictor(websocket)
+
+    def set_mode(self, is_final_only: bool):
+        """翻訳モードを切り替え"""
+        self.intent_estimator.is_final_only = is_final_only
+        mode_name = "FINAL_ONLY (QUALITY)" if is_final_only else "HYBRID (SPEED+QUALITY)"
+        print(f"[Mode] Switched to {mode_name}", flush=True)
+
+    def set_min_words(self, min_words: int):
+        """partial処理の最小単語数を設定"""
+        self.intent_estimator.min_words = min_words
+        print(f"[Config] min_words set to {min_words}", flush=True)
+
+    def set_model(self, model: LLMModel):
+        """LLMモデルを切り替え（IntentEstimatorとSummaryGenerator両方）"""
+        self.intent_estimator.model = model
+        self.summary_generator.model = model
+        print(f"[Model] Switched to {model.upper()} (intent + summary)", flush=True)
 
     async def start(self):
         if not DEEPGRAM_API_KEY:
@@ -522,8 +769,35 @@ async def websocket_audio(websocket: WebSocket):
                 await manager.send_audio(audio_data)
             elif "text" in data:
                 message = json.loads(data["text"])
-                if message.get("type") == "stop":
+                msg_type = message.get("type")
+                if msg_type == "stop":
                     break
+                elif msg_type == "set_mode":
+                    # モード切り替え: {"type": "set_mode", "is_final_only": true/false}
+                    is_final_only = message.get("is_final_only", False)
+                    manager.set_mode(is_final_only)
+                    await websocket.send_json({
+                        "type": "mode_changed",
+                        "is_final_only": is_final_only,
+                        "mode_name": "FINAL_ONLY" if is_final_only else "HYBRID"
+                    })
+                elif msg_type == "set_min_words":
+                    # 最小単語数設定: {"type": "set_min_words", "min_words": 5}
+                    min_words = message.get("min_words", 5)
+                    manager.set_min_words(min_words)
+                    await websocket.send_json({
+                        "type": "config_changed",
+                        "min_words": min_words
+                    })
+                elif msg_type == "set_model":
+                    # LLMモデル切り替え: {"type": "set_model", "model": "gpt4" | "gpt5" | "gemini"}
+                    model = message.get("model", "gpt4")
+                    if model in ("gpt4", "gpt5", "gemini"):
+                        manager.set_model(model)
+                        await websocket.send_json({
+                            "type": "model_changed",
+                            "model": model
+                        })
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")

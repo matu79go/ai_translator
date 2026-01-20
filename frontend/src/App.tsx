@@ -35,6 +35,16 @@ const DIALOGUE_ACT_LABELS: Record<string, { label: string; color: string }> = {
   OTHER: { label: 'その他', color: 'bg-gray-400' },
 };
 
+// 統合タイムラインエントリ
+interface TimelineEntry {
+  id: number;
+  intentLabel: string;
+  dialogueAct: string;
+  translation: string | null;  // 翻訳が来るまでnull
+  isFinal: boolean;
+  timestamp: Date;
+}
+
 function App() {
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState<string>('');
@@ -42,8 +52,11 @@ function App() {
   const [partialIntentLabel, setPartialIntentLabel] = useState<string>('');
   const [intentHistory, setIntentHistory] = useState<IntentHistoryEntry[]>([]);
   const [translationHistory, setTranslationHistory] = useState<TranslationHistoryEntry[]>([]);
-  const [realtimeTranslations, setRealtimeTranslations] = useState<string[]>([]);
+  const [realtimeTranslations, setRealtimeTranslations] = useState<{sourceText: string; translation: string; isFinal: boolean}[]>([]);
   const [realtimeIntents, setRealtimeIntents] = useState<{label: string; act: string}[]>([]);
+  // 統合タイムライン
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  const timelineEndRef = useRef<HTMLDivElement>(null);
   const translationsEndRef = useRef<HTMLDivElement>(null);
   const intentsEndRef = useRef<HTMLDivElement>(null);
   const [summary, setSummary] = useState<string>('');
@@ -82,16 +95,46 @@ function App() {
       case 'intent_partial': {
         // 部分的な意図ラベルを即座に表示
         setPartialIntentLabel(message.intent_label);
+        // タイムラインに意図を追加（翻訳はまだnull）
+        setTimeline((prev) => {
+          const lastEntry = prev[prev.length - 1];
+          // 同じ意図ラベルなら更新しない
+          if (lastEntry?.intentLabel === message.intent_label && !lastEntry?.isFinal) {
+            return prev;
+          }
+          // 最新のpartialエントリを上書き、または新規追加
+          const lastPartialIndex = prev.findLastIndex((e) => !e.isFinal);
+          if (lastPartialIndex !== -1) {
+            const newList = [...prev];
+            newList[lastPartialIndex] = {
+              ...newList[lastPartialIndex],
+              intentLabel: message.intent_label,
+            };
+            return newList;
+          }
+          return [...prev, {
+            id: Date.now(),
+            intentLabel: message.intent_label,
+            dialogueAct: 'OTHER',
+            translation: null,
+            isFinal: false,
+            timestamp: new Date(),
+          }];
+        });
         break;
       }
       case 'translation_partial': {
-        // 部分的な翻訳を即座に履歴に追加
+        // 部分的な翻訳: 最新のpartialを上書き（1つだけ保持）
         setRealtimeTranslations((prev) => {
-          const lastTranslation = prev[prev.length - 1];
-          if (lastTranslation !== message.translation) {
-            return [...prev, message.translation];
+          const lastPartialIndex = prev.findLastIndex((entry) => !entry.isFinal);
+          if (lastPartialIndex !== -1) {
+            // 既存のpartialを上書き
+            const newList = [...prev];
+            newList[lastPartialIndex] = { sourceText: message.source_text, translation: message.translation, isFinal: false };
+            return newList;
           }
-          return prev;
+          // partialがなければ追加
+          return [...prev, { sourceText: message.source_text, translation: message.translation, isFinal: false }];
         });
         break;
       }
@@ -108,14 +151,67 @@ function App() {
             return prev;
           });
         }
-        // リアルタイム翻訳履歴に追加（重複チェック）
+        // タイムラインを更新（意図+翻訳）
+        setTimeline((prev) => {
+          const lastPartialIndex = prev.findLastIndex((e) => !e.isFinal);
+          const newEntry: TimelineEntry = {
+            id: Date.now(),
+            intentLabel: message.data.intent_label || '',
+            dialogueAct: message.data.dialogue_act || 'OTHER',
+            translation: message.data.full_translation || null,
+            isFinal: message.is_final,
+            timestamp: new Date(),
+          };
+
+          if (lastPartialIndex !== -1) {
+            // 既存のpartialを更新
+            const newList = [...prev];
+            newList[lastPartialIndex] = newEntry;
+            return newList;
+          }
+          // 新規追加
+          return [...prev, newEntry];
+        });
+        // リアルタイム翻訳履歴に追加/上書き
         if (message.data.full_translation) {
           setRealtimeTranslations((prev) => {
-            const lastTranslation = prev[prev.length - 1];
-            if (lastTranslation !== message.data.full_translation) {
-              return [...prev, message.data.full_translation!];
+            const lastPartialIndex = prev.findLastIndex((entry) => !entry.isFinal);
+
+            if (message.is_final) {
+              // is_final=true: partialを確定翻訳に変換
+              if (lastPartialIndex !== -1) {
+                const newList = [...prev];
+                newList[lastPartialIndex] = {
+                  sourceText: message.source_text,
+                  translation: message.data.full_translation!,
+                  isFinal: true
+                };
+                return newList;
+              }
+              // partialがなければ新規追加
+              return [...prev, {
+                sourceText: message.source_text,
+                translation: message.data.full_translation!,
+                isFinal: true
+              }];
+            } else {
+              // is_final=false (partial): 既存のpartialを上書き
+              if (lastPartialIndex !== -1) {
+                const newList = [...prev];
+                newList[lastPartialIndex] = {
+                  sourceText: message.source_text,
+                  translation: message.data.full_translation!,
+                  isFinal: false
+                };
+                return newList;
+              }
+              // partialがなければ新規追加
+              return [...prev, {
+                sourceText: message.source_text,
+                translation: message.data.full_translation!,
+                isFinal: false
+              }];
             }
-            return prev;
           });
         }
         break;
@@ -161,18 +257,47 @@ function App() {
     setStatus('接続エラー');
   }, []);
 
+  // モード切り替え
+  const [isFinalOnly, setIsFinalOnly] = useState(false);
+  // LLMモデル切り替え
+  const [model, setModel] = useState<'gpt4' | 'gemini'>('gpt4');
+
   const wsUrl =
     import.meta.env.MODE === 'development'
       ? `ws://${window.location.hostname}:8000/ws/audio`
       : `ws://${window.location.host}/ws/audio`;
 
-  const { isConnected, connect, disconnect, sendAudio } = useWebSocket({
+  const { isConnected, connect, disconnect, sendAudio, sendControl } = useWebSocket({
     url: wsUrl,
     onMessage: handleMessage,
     onOpen: handleOpen,
     onClose: handleClose,
     onError: handleError,
   });
+
+  const toggleMode = useCallback(() => {
+    const newMode = !isFinalOnly;
+    setIsFinalOnly(newMode);
+    sendControl({ type: 'set_mode', is_final_only: newMode });
+  }, [isFinalOnly, sendControl]);
+
+  const toggleModel = useCallback(() => {
+    const newModel = model === 'gpt4' ? 'gemini' : 'gpt4';
+    setModel(newModel);
+    sendControl({ type: 'set_model', model: newModel });
+  }, [model, sendControl]);
+
+  // 接続時に設定を同期
+  useEffect(() => {
+    if (isConnected) {
+      if (isFinalOnly) {
+        sendControl({ type: 'set_mode', is_final_only: true });
+      }
+      if (model !== 'gpt4') {
+        sendControl({ type: 'set_model', model });
+      }
+    }
+  }, [isConnected]);
 
   const handleAudioData = useCallback(
     (data: ArrayBuffer) => {
@@ -198,11 +323,17 @@ function App() {
     setTranslationHistory([]);
     setRealtimeTranslations([]);
     setRealtimeIntents([]);
+    setTimeline([]);
     setSummary('');
     setSummaryHistory([]);
     setTopics([]);
     setHints([]);
   }, []);
+
+  // タイムラインの自動スクロール
+  useEffect(() => {
+    timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [timeline]);
 
   // 翻訳履歴の自動スクロール
   useEffect(() => {
@@ -233,7 +364,28 @@ function App() {
           <h1 className="text-3xl font-bold text-gray-800 mb-2">
             Intent-First Translation
           </h1>
-          <p className="text-gray-600">高速モード - ストリーミング有効</p>
+          <div className="flex justify-center items-center gap-2 mt-2">
+            <button
+              onClick={toggleModel}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-90 ${
+                model === 'gpt4'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-blue-600 text-white'
+              }`}
+            >
+              {model === 'gpt4' ? 'GPT-4' : 'Gemini'}
+            </button>
+            <button
+              onClick={toggleMode}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-90 ${
+                isFinalOnly
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-green-600 text-white'
+              }`}
+            >
+              {isFinalOnly ? 'FINAL_ONLY' : 'HYBRID'}
+            </button>
+          </div>
           <div className="mt-2 text-sm text-gray-500">{status}</div>
         </header>
 
@@ -263,78 +415,64 @@ function App() {
           </div>
         )}
 
-        {/* 意図と翻訳 - 2カラム */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {/* 意図履歴 */}
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold text-gray-700">意図</h2>
-              {realtimeIntents.length > 0 && (
-                <button
-                  onClick={clearAll}
-                  className="text-sm text-gray-500 hover:text-gray-700"
-                >
-                  クリア
-                </button>
-              )}
-            </div>
-            <div className="max-h-[400px] overflow-y-auto space-y-2">
-              {realtimeIntents.length === 0 ? (
-                <p className="text-gray-400 text-center py-4">
-                  意図がここに表示されます
-                </p>
-              ) : (
-                <>
-                  {realtimeIntents.map((intent, i) => {
-                    const actInfo = DIALOGUE_ACT_LABELS[intent.act] || DIALOGUE_ACT_LABELS.OTHER;
-                    return (
-                      <div
-                        key={i}
-                        className={`p-2 rounded flex items-center gap-2 ${
-                          i === realtimeIntents.length - 1
-                            ? 'bg-green-50 border-l-2 border-green-400'
-                            : 'bg-gray-50'
-                        }`}
-                      >
-                        <span className={`px-2 py-0.5 rounded text-white text-xs ${actInfo.color}`}>
-                          {actInfo.label}
-                        </span>
-                        <span className="text-gray-800 font-medium">{intent.label}</span>
-                      </div>
-                    );
-                  })}
-                  <div ref={intentsEndRef} />
-                </>
-              )}
-            </div>
+        {/* 統合タイムライン */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg font-semibold text-gray-700">リアルタイム翻訳</h2>
+            {timeline.length > 0 && (
+              <button
+                onClick={clearAll}
+                className="text-sm text-gray-500 hover:text-gray-700"
+              >
+                クリア
+              </button>
+            )}
           </div>
-
-          {/* 翻訳履歴 */}
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h2 className="text-lg font-semibold text-gray-700 mb-4">翻訳</h2>
-            <div className="max-h-[400px] overflow-y-auto space-y-2">
-              {realtimeTranslations.length === 0 ? (
-                <p className="text-gray-400 text-center py-4">
-                  翻訳がここに表示されます
-                </p>
-              ) : (
-                <>
-                  {realtimeTranslations.map((translation, i) => (
-                    <p
-                      key={i}
-                      className={`text-gray-800 p-2 rounded ${
-                        i === realtimeTranslations.length - 1
-                          ? 'bg-blue-50 border-l-2 border-blue-400'
+          <div className="max-h-[400px] overflow-y-auto space-y-3">
+            {timeline.length === 0 ? (
+              <p className="text-gray-400 text-center py-8">
+                話し始めると、意図と翻訳がここに表示されます
+              </p>
+            ) : (
+              <>
+                {timeline.map((entry, i) => {
+                  const actInfo = DIALOGUE_ACT_LABELS[entry.dialogueAct] || DIALOGUE_ACT_LABELS.OTHER;
+                  const isLatest = i === timeline.length - 1;
+                  return (
+                    <div
+                      key={entry.id}
+                      className={`p-3 rounded-lg ${
+                        isLatest
+                          ? entry.isFinal
+                            ? 'bg-green-50 border-l-4 border-green-500'
+                            : 'bg-blue-50 border-l-4 border-blue-400'
                           : 'bg-gray-50'
                       }`}
                     >
-                      {translation}
-                    </p>
-                  ))}
-                  <div ref={translationsEndRef} />
-                </>
-              )}
-            </div>
+                      {/* 意図ラベル行 */}
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`px-2 py-0.5 rounded text-white text-xs ${actInfo.color}`}>
+                          {actInfo.label}
+                        </span>
+                        <span className="text-gray-700 font-medium">{entry.intentLabel}</span>
+                        {!entry.isFinal && <span className="text-xs text-blue-500 animate-pulse">処理中...</span>}
+                      </div>
+                      {/* 翻訳行 */}
+                      {entry.translation ? (
+                        <p className="text-gray-800 text-lg pl-1">
+                          → {entry.translation}
+                        </p>
+                      ) : (
+                        <p className="text-gray-400 text-sm pl-1 animate-pulse">
+                          → 翻訳中...
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+                <div ref={timelineEndRef} />
+              </>
+            )}
           </div>
         </div>
 
