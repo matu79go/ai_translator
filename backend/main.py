@@ -152,6 +152,35 @@ INTENT_SYSTEM_PROMPT_QUALITY = """あなたはリアルタイム対話支援AI�
 
 注意: JSON以外の文字は出力しないでください。"""
 
+# 実験用プロンプト: 推測翻訳を先に出す（speculative_translation）
+INTENT_SYSTEM_PROMPT_EXPERIMENTAL = """あなたはリアルタイム同時通訳AIです。
+人間の同時通訳者のように、文が完結する前に「推測」で翻訳を開始してください。
+
+処理順序（重要 - この順序で出力すること）:
+1. dialogue_act: 対話行為を即座に判断
+2. intent_label: 意図を10文字以内で抽出
+3. speculative_translation: ここで即座に推測翻訳を出力！（精度より速度優先）
+4. slots: 重要情報を特定
+5. full_translation: 全情報を考慮した正確な翻訳
+
+推測翻訳のルール（速度最優先）:
+- dialogue_act + intent_label だけで推測する
+- 例: PROPOSAL + 「日程調整」 → 「日程について提案しています」
+- 例: QUESTION + 「確認依頼」 → 「確認を求めています」
+- 完璧でなくてよい、方向性が伝わればOK
+
+出力JSON形式（この順序厳守）:
+{
+  "dialogue_act": "QUESTION | PROPOSAL | AGREEMENT | DISAGREEMENT | STATEMENT | GREETING | OTHER",
+  "intent_label": "短い日本語ラベル",
+  "speculative_translation": "dialogue_act+intent_labelから即座に推測した翻訳",
+  "slots": {"when": "", "who": "", "where": "", "what": ""},
+  "full_translation": "全情報を考慮した正確な翻訳",
+  "confidence": 0.0〜1.0
+}
+
+注意: JSON以外の文字は出力しないでください。"""
+
 SUMMARY_SYSTEM_PROMPT = """あなたは会話要約AIです。
 複数の発話から、会話全体の要約と主要なトピックを抽出してください。
 
@@ -341,12 +370,13 @@ class IntentEstimator:
 
     def __init__(self, websocket: WebSocket, debounce_ms: int = 300,
                  is_final_only: bool = False, min_words: int = 5,
-                 model: LLMModel = "gpt4"):
+                 model: LLMModel = "gpt4", experimental: bool = False):
         self.websocket = websocket
         self.debounce_ms = debounce_ms
         self.is_final_only = is_final_only  # Trueの場合、is_final=Trueのみ処理
         self.min_words = min_words  # partial時の最小単語数
         self.model = model  # "gpt4", "gpt5", "gemini"
+        self.experimental = experimental  # 実験モード（推測翻訳）
         self.last_text = ""
         self.last_call_time = 0
         self.pending_task: Optional[asyncio.Task] = None
@@ -418,8 +448,16 @@ class IntentEstimator:
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
-        system_prompt = INTENT_SYSTEM_PROMPT_QUALITY if is_final else INTENT_SYSTEM_PROMPT_SPEED
-        mode = "QUALITY" if is_final else "SPEED"
+        # 実験モードの場合は専用プロンプト
+        if self.experimental:
+            system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
+            mode = "EXPERIMENTAL"
+        elif is_final:
+            system_prompt = INTENT_SYSTEM_PROMPT_QUALITY
+            mode = "QUALITY"
+        else:
+            system_prompt = INTENT_SYSTEM_PROMPT_SPEED
+            mode = "SPEED"
         print(f"[GPT-4] Start streaming [{mode}] for: {text[:30]}...", flush=True)
 
         context = ""
@@ -443,6 +481,7 @@ class IntentEstimator:
             full_response = ""
             sent_intent_partial = False
             sent_translation_partial = False
+            sent_speculative = False  # 実験モード用
             first_chunk_time = None
 
             async for chunk in stream:
@@ -452,12 +491,32 @@ class IntentEstimator:
                         print(f"[GPT-4] First chunk in {(first_chunk_time - start_time)*1000:.0f}ms", flush=True)
 
                     full_response += chunk.choices[0].delta.content
+
+                    # 実験モード: speculative_translation を先に送信
+                    if self.experimental and not sent_speculative and '"speculative_translation"' in full_response:
+                        try:
+                            match = re.search(r'"speculative_translation"\s*:\s*"([^"]+)"', full_response)
+                            if match:
+                                speculative = match.group(1)
+                                spec_time = (time.time() - start_time) * 1000
+                                print(f"[GPT-4] @{spec_time:.0f}ms SPECULATIVE: {speculative[:40]}...", flush=True)
+                                await self.websocket.send_json({
+                                    "type": "speculative_translation",
+                                    "translation": speculative,
+                                    "source_text": text,
+                                })
+                                sent_speculative = True
+                        except:
+                            pass
+
                     await self._process_streaming_chunk(
                         full_response, text, sent_intent_partial, sent_translation_partial
                     )
                     if not sent_intent_partial and '"intent_label"' in full_response:
                         sent_intent_partial = True
                     if not sent_translation_partial and '"full_translation"' in full_response:
+                        full_time = (time.time() - start_time) * 1000
+                        print(f"[GPT-4] @{full_time:.0f}ms FULL_TRANSLATION detected", flush=True)
                         sent_translation_partial = True
 
             await self._finalize_response(full_response, text, is_final, start_time, "GPT-4")
@@ -623,6 +682,12 @@ class TranscriptionManager:
         self.intent_estimator.model = model
         self.summary_generator.model = model
         print(f"[Model] Switched to {model.upper()} (intent + summary)", flush=True)
+
+    def set_experimental(self, enabled: bool):
+        """実験モード（推測翻訳）を切り替え"""
+        self.intent_estimator.experimental = enabled
+        mode_name = "EXPERIMENTAL (speculative)" if enabled else "NORMAL"
+        print(f"[Mode] Switched to {mode_name}", flush=True)
 
     async def start(self):
         if not DEEPGRAM_API_KEY:
@@ -798,6 +863,14 @@ async def websocket_audio(websocket: WebSocket):
                             "type": "model_changed",
                             "model": model
                         })
+                elif msg_type == "set_experimental":
+                    # 実験モード切り替え: {"type": "set_experimental", "enabled": true/false}
+                    enabled = message.get("enabled", False)
+                    manager.set_experimental(enabled)
+                    await websocket.send_json({
+                        "type": "experimental_changed",
+                        "enabled": enabled
+                    })
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")

@@ -11,19 +11,7 @@ interface TranscriptEntry {
   timestamp: Date;
 }
 
-interface IntentHistoryEntry {
-  id: number;
-  intent: IntentData;
-  sourceText: string;
-  timestamp: Date;
-}
-
-interface TranslationHistoryEntry {
-  id: number;
-  sourceText: string;
-  translation: string;
-  timestamp: Date;
-}
+// Note: IntentHistoryEntry and TranslationHistoryEntry interfaces removed - using timeline
 
 const DIALOGUE_ACT_LABELS: Record<string, { label: string; color: string }> = {
   QUESTION: { label: '質問', color: 'bg-blue-500' },
@@ -48,10 +36,9 @@ interface TimelineEntry {
 function App() {
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState<string>('');
-  const [currentIntent, setCurrentIntent] = useState<IntentData | null>(null);
-  const [partialIntentLabel, setPartialIntentLabel] = useState<string>('');
-  const [intentHistory, setIntentHistory] = useState<IntentHistoryEntry[]>([]);
-  const [translationHistory, setTranslationHistory] = useState<TranslationHistoryEntry[]>([]);
+  const [_currentIntent, setCurrentIntent] = useState<IntentData | null>(null);
+  const [_partialIntentLabel, setPartialIntentLabel] = useState<string>('');
+  // Note: intentHistory and translationHistory removed - using timeline instead
   const [realtimeTranslations, setRealtimeTranslations] = useState<{sourceText: string; translation: string; isFinal: boolean}[]>([]);
   const [realtimeIntents, setRealtimeIntents] = useState<{label: string; act: string}[]>([]);
   // 統合タイムライン
@@ -319,8 +306,6 @@ function App() {
     setCurrentTranscript('');
     setCurrentIntent(null);
     setPartialIntentLabel('');
-    setIntentHistory([]);
-    setTranslationHistory([]);
     setRealtimeTranslations([]);
     setRealtimeIntents([]);
     setTimeline([]);
@@ -350,12 +335,7 @@ function App() {
     summaryEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [summaryHistory]);
 
-  const dialogueActInfo = currentIntent
-    ? DIALOGUE_ACT_LABELS[currentIntent.dialogue_act] || DIALOGUE_ACT_LABELS.OTHER
-    : null;
-
-  // 表示する意図ラベル（partialがあればpartial、なければ完全版）
-  const displayIntentLabel = partialIntentLabel || currentIntent?.intent_label || '';
+  // Note: dialogueActInfo and displayIntentLabel removed - using timeline instead
 
   return (
     <div className="min-h-screen bg-gray-100 py-8 px-4">

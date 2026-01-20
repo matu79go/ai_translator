@@ -64,7 +64,13 @@ export type TranslationPartialMessage = {
   source_text: string;
 };
 
-export type WebSocketMessage = TranscriptMessage | StatusMessage | ErrorMessage | IntentMessage | SummaryMessage | HintsMessage | IntentPartialMessage | TranslationPartialMessage;
+export type SpeculativeTranslationMessage = {
+  type: 'speculative_translation';
+  translation: string;
+  source_text: string;
+};
+
+export type WebSocketMessage = TranscriptMessage | StatusMessage | ErrorMessage | IntentMessage | SummaryMessage | HintsMessage | IntentPartialMessage | TranslationPartialMessage | SpeculativeTranslationMessage;
 
 type UseWebSocketOptions = {
   url: string;
