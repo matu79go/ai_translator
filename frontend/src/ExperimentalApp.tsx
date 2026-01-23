@@ -34,6 +34,12 @@ function ExperimentalApp() {
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<string>('未接続');
   const [displayMode, setDisplayMode] = useState<DisplayMode>('separate');
+  // サマリー関連
+  const [summary, setSummary] = useState<string>('');
+  const [summaryHistory, setSummaryHistory] = useState<string[]>([]);
+  const [topics, setTopics] = useState<string[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const summaryEndRef = useRef<HTMLDivElement>(null);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
     switch (message.type) {
@@ -122,6 +128,21 @@ function ExperimentalApp() {
         });
         break;
       }
+      case 'summary': {
+        setSummary(message.summary);
+        setTopics(message.topics);
+        setIsStreaming(message.streaming || false);
+        if (!message.streaming && message.summary) {
+          setSummaryHistory((prev) => {
+            const lastSummary = prev[prev.length - 1];
+            if (lastSummary !== message.summary) {
+              return [...prev, message.summary];
+            }
+            return prev;
+          });
+        }
+        break;
+      }
       case 'status':
         setStatus(message.message);
         break;
@@ -144,10 +165,12 @@ function ExperimentalApp() {
     setStatus('接続エラー');
   }, []);
 
-  const wsUrl =
-    import.meta.env.MODE === 'development'
-      ? `ws://${window.location.hostname}:8000/ws/audio`
-      : `ws://${window.location.host}/ws/audio`;
+  // WebSocket URL: httpsならwss、httpならws
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsHost = import.meta.env.MODE === 'development'
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const wsUrl = `${wsProtocol}//${wsHost}/ws/audio`;
 
   const { isConnected, connect, disconnect, sendAudio, sendControl } = useWebSocket({
     url: wsUrl,
@@ -182,12 +205,20 @@ function ExperimentalApp() {
   const clearAll = useCallback(() => {
     setTimeline([]);
     setCurrentTranscript('');
+    setSummary('');
+    setSummaryHistory([]);
+    setTopics([]);
   }, []);
 
   // タイムラインの自動スクロール
   useEffect(() => {
     timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [timeline]);
+
+  // サマリー履歴の自動スクロール
+  useEffect(() => {
+    summaryEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [summaryHistory]);
 
   // 上書きモード用: 表示する翻訳を決定
   const getDisplayTranslation = (entry: SpeculativeEntry) => {
@@ -207,8 +238,23 @@ function ExperimentalApp() {
       <div className="max-w-5xl mx-auto">
         <header className="text-center mb-6">
           <h1 className="text-3xl font-bold text-orange-800 mb-2">
-            実験: 推測翻訳 (Speculative Translation)
+            Intent-First Translation
           </h1>
+          {/* ページ切り替えタブ */}
+          <div className="flex justify-center gap-1 mb-4">
+            <Link
+              to="/"
+              className="px-4 py-2 rounded-t-lg text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+            >
+              通常版
+            </Link>
+            <Link
+              to="/experimental"
+              className="px-4 py-2 rounded-t-lg text-sm font-medium bg-white text-orange-800 border-b-2 border-orange-500"
+            >
+              実験版（推測翻訳）
+            </Link>
+          </div>
           <p className="text-orange-600 text-sm mb-2">
             意図(dialogue_act + intent_label)から翻訳を先行推測する実験
           </p>
@@ -236,10 +282,6 @@ function ExperimentalApp() {
               上書き表示
             </button>
           </div>
-
-          <Link to="/" className="text-blue-600 hover:underline text-sm">
-            ← 通常版に戻る
-          </Link>
           <div className="mt-2 text-sm text-gray-500">{status}</div>
         </header>
 
@@ -419,10 +461,46 @@ function ExperimentalApp() {
           </p>
         </div>
 
-        <footer className="mt-8 text-center text-sm text-gray-500">
+        <footer className="mt-8 text-center text-sm text-gray-500 pb-24">
           <p>Experimental: Speculative Translation</p>
         </footer>
       </div>
+
+      {/* 会話サマリー - 画面下部に固定 */}
+      {(summaryHistory.length > 0 || summary) && (
+        <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-r from-indigo-500 to-purple-600 shadow-lg text-white z-50">
+          <div className="max-w-5xl mx-auto p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="font-semibold">サマリー</span>
+              {isStreaming && <span className="text-xs bg-white/20 px-2 py-0.5 rounded animate-pulse">更新中...</span>}
+              {topics.length > 0 && (
+                <div className="flex flex-wrap gap-1 ml-auto">
+                  {topics.map((topic, i) => (
+                    <span key={i} className="px-2 py-0.5 bg-white/20 rounded text-xs">
+                      {topic}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="max-h-[120px] overflow-y-auto space-y-2">
+              {summaryHistory.map((s, i) => (
+                <p
+                  key={i}
+                  className={`text-sm p-2 rounded ${
+                    i === summaryHistory.length - 1
+                      ? 'bg-white/20 text-white'
+                      : 'bg-white/10 text-white/70'
+                  }`}
+                >
+                  {s}
+                </p>
+              ))}
+              <div ref={summaryEndRef} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

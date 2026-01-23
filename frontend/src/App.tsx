@@ -1,4 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { AudioRecorder } from './components/AudioRecorder';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { WebSocketMessage, IntentData } from './hooks/useWebSocket';
@@ -249,10 +250,12 @@ function App() {
   // LLMモデル切り替え
   const [model, setModel] = useState<'gpt4' | 'gemini'>('gpt4');
 
-  const wsUrl =
-    import.meta.env.MODE === 'development'
-      ? `ws://${window.location.hostname}:8000/ws/audio`
-      : `ws://${window.location.host}/ws/audio`;
+  // WebSocket URL: httpsならwss、httpならws
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsHost = import.meta.env.MODE === 'development'
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const wsUrl = `${wsProtocol}//${wsHost}/ws/audio`;
 
   const { isConnected, connect, disconnect, sendAudio, sendControl } = useWebSocket({
     url: wsUrl,
@@ -344,6 +347,21 @@ function App() {
           <h1 className="text-3xl font-bold text-gray-800 mb-2">
             Intent-First Translation
           </h1>
+          {/* ページ切り替えタブ */}
+          <div className="flex justify-center gap-1 mb-4">
+            <Link
+              to="/"
+              className="px-4 py-2 rounded-t-lg text-sm font-medium bg-white text-gray-800 border-b-2 border-blue-500"
+            >
+              通常版
+            </Link>
+            <Link
+              to="/experimental"
+              className="px-4 py-2 rounded-t-lg text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+            >
+              実験版（推測翻訳）
+            </Link>
+          </div>
           <div className="flex justify-center items-center gap-2 mt-2">
             <button
               onClick={toggleModel}

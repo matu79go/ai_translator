@@ -5,9 +5,12 @@ import re
 import time
 from typing import Optional, Literal
 
+from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from deepgram import (
     DeepgramClient,
     DeepgramClientOptions,
@@ -799,9 +802,8 @@ class TranscriptionManager:
             await self.dg_connection.finish()
 
 
-@app.get("/")
-async def root():
-    return {"message": "Intent-First Translation API", "status": "running"}
+# 静的ファイルのパス
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 
 @app.get("/health")
@@ -880,6 +882,22 @@ async def websocket_audio(websocket: WebSocket):
         if manager:
             await manager.close()
         print("WebSocket connection closed")
+
+
+# 静的ファイル配信（フロントエンドビルド後）
+if FRONTEND_DIST.exists():
+    # 静的アセット（js, css, etc）
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+    # SPAルーティング: すべてのパスでindex.htmlを返す
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # ファイルが存在すればそれを返す
+        file_path = FRONTEND_DIST / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        # それ以外はindex.html（SPAルーティング）
+        return FileResponse(FRONTEND_DIST / "index.html")
 
 
 if __name__ == "__main__":

@@ -131,7 +131,58 @@ LLMはストリーミングでJSONを**上から順番に**生成する。その
 ## 8. 評価指標
 
 - **Latency (T1)**: 発話開始から「意図ラベル」が画面に出るまでの秒数。
-  
+
 - **Stability**: 会話が進む中で、意図ラベルが不自然に激しく変化しないか。
-  
+
 - **Perceived Delay**: 逐次翻訳のみの場合と比較して、会話のテンポが改善されたか。
+
+## 9. 起動方法
+
+### ローカル開発（PC）
+
+2つのターミナルで起動:
+
+```bash
+# ターミナル1: バックエンド
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# ターミナル2: フロントエンド（開発サーバー）
+cd frontend
+npm run dev
+```
+
+アクセス: http://localhost:5173
+
+### 携帯テスト（ngrok経由）
+
+ngrokを使って外部からアクセス可能にする。**HTTPSが自動提供されるためマイクが使える。**
+
+```bash
+# 1. フロントエンドをビルド（コード変更時のみ）
+cd frontend
+npm run build
+
+# 2. バックエンド起動（ビルド済みフロントエンドも配信）
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# 3. 別ターミナルでngrok起動
+ngrok http 8000
+```
+
+表示されたURL（例: `https://xxxx.ngrok-free.app`）を携帯ブラウザで開く。
+
+**注意:**
+- ngrok無料版はURLが毎回変わる
+- 使い終わったら `Ctrl+C` でngrokを停止（セキュリティのため）
+- バックエンドとngrok両方が起動している必要がある
+
+### 環境変数
+
+`backend/.env` に設定:
+```
+DEEPGRAM_API_KEY=your_deepgram_key
+OPENAI_API_KEY=your_openai_key
+GOOGLE_API_KEY=your_google_api_key
+```
