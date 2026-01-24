@@ -28,12 +28,34 @@ const DIALOGUE_ACT_LABELS: Record<string, { label: string; color: string }> = {
   OTHER: { label: 'その他', color: 'bg-gray-400' },
 };
 
+// LLMモデル型
+type ModelType = 'gpt4' | 'gemini' | 'gemma' | 'groq';
+const MODEL_OPTIONS: { value: ModelType; label: string; color: string }[] = [
+  { value: 'gpt4', label: 'GPT-4', color: 'bg-emerald-600' },
+  { value: 'gemini', label: 'Gemini', color: 'bg-blue-600' },
+  { value: 'gemma', label: 'Gemma 3 (ローカル)', color: 'bg-orange-600' },
+  { value: 'groq', label: 'Groq', color: 'bg-pink-600' },
+];
+
+// Groqサブモデル
+type GroqModelType = 'llama-3.1-8b-instant' | 'llama-3.3-70b-versatile' | 'meta-llama/llama-4-maverick-17b-128e-instruct' | 'openai/gpt-oss-120b';
+const GROQ_MODEL_OPTIONS: { value: GroqModelType; label: string }[] = [
+  { value: 'meta-llama/llama-4-maverick-17b-128e-instruct', label: 'Llama 4 Maverick (最速)' },
+  { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (推奨)' },
+  { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B' },
+  { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (高品質)' },
+];
+
 function ExperimentalApp() {
   const [currentTranscript, setCurrentTranscript] = useState<string>('');
   const [timeline, setTimeline] = useState<SpeculativeEntry[]>([]);
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<string>('未接続');
   const [displayMode, setDisplayMode] = useState<DisplayMode>('separate');
+  // LLMモデル切り替え（4モデル対応）
+  const [model, setModel] = useState<ModelType>('gpt4');
+  // Groqサブモデル
+  const [groqModel, setGroqModel] = useState<GroqModelType>('meta-llama/llama-4-maverick-17b-128e-instruct');
   // サマリー関連
   const [summary, setSummary] = useState<string>('');
   const [summaryHistory, setSummaryHistory] = useState<string[]>([]);
@@ -180,12 +202,30 @@ function ExperimentalApp() {
     onError: handleError,
   });
 
-  // 接続時に実験モードを有効化
+  // モデル選択
+  const selectModel = useCallback((newModel: ModelType) => {
+    setModel(newModel);
+    sendControl({ type: 'set_model', model: newModel });
+  }, [sendControl]);
+
+  // Groqサブモデル選択
+  const selectGroqModel = useCallback((newGroqModel: GroqModelType) => {
+    setGroqModel(newGroqModel);
+    sendControl({ type: 'set_groq_model', groq_model: newGroqModel });
+  }, [sendControl]);
+
+  // 接続時に実験モードを有効化 + モデル設定を同期
   useEffect(() => {
     if (isConnected) {
       sendControl({ type: 'set_experimental', enabled: true });
+      if (model !== 'gpt4') {
+        sendControl({ type: 'set_model', model });
+      }
+      if (model === 'groq') {
+        sendControl({ type: 'set_groq_model', groq_model: groqModel });
+      }
     }
-  }, [isConnected, sendControl]);
+  }, [isConnected, sendControl, model, groqModel]);
 
   const handleAudioData = useCallback(
     (data: ArrayBuffer) => {
@@ -259,8 +299,43 @@ function ExperimentalApp() {
             意図(dialogue_act + intent_label)から翻訳を先行推測する実験
           </p>
 
+          {/* モデル選択（4択） */}
+          <div className="flex justify-center gap-1 mt-3 mb-2">
+            {MODEL_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => selectModel(opt.value)}
+                className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  model === opt.value
+                    ? `${opt.color} text-white`
+                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Groqサブモデル選択（Groq選択時のみ表示） */}
+          {model === 'groq' && (
+            <div className="flex justify-center items-center gap-2 mt-2">
+              <span className="text-sm text-gray-600">Groqモデル:</span>
+              <select
+                value={groqModel}
+                onChange={(e) => selectGroqModel(e.target.value as GroqModelType)}
+                className="px-3 py-1.5 rounded-lg text-sm border border-pink-300 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-pink-500"
+              >
+                {GROQ_MODEL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* 表示モード切り替え */}
-          <div className="flex justify-center gap-2 mt-3 mb-2">
+          <div className="flex justify-center gap-2 mt-2 mb-2">
             <button
               onClick={() => setDisplayMode('separate')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -472,6 +547,7 @@ function ExperimentalApp() {
           <div className="max-w-5xl mx-auto p-3">
             <div className="flex items-center gap-2 mb-2">
               <span className="font-semibold">サマリー</span>
+              {(model === 'gemma' || model === 'groq') && <span className="text-xs bg-white/30 px-2 py-0.5 rounded">GPT-4で生成</span>}
               {isStreaming && <span className="text-xs bg-white/20 px-2 py-0.5 rounded animate-pulse">更新中...</span>}
               {topics.length > 0 && (
                 <div className="flex flex-wrap gap-1 ml-auto">

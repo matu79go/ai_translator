@@ -62,7 +62,7 @@
 | 会話サマリー | 全体の要約（画面下固定） | 沈黙1.5秒後 |
 | トランスクリプト | 音声認識結果 | ~200ms |
 | 予測ヒント | キーワードベースの即時予測 | ~0ms |
-| モデル切替 | GPT-4 / Gemini リアルタイム切替 | - |
+| モデル切替 | GPT-4 / Gemini / Gemma 3 (ローカル) / **Groq** | - |
 | モード切替 | HYBRID / FINAL_ONLY | - |
 
 ### ルート構成
@@ -86,13 +86,45 @@
 - [ ] 推測訳の精度向上（より多くの文脈を考慮）
 - [ ] 音声読み上げ(TTS)対応（is_final時に読み上げ）
 
-### ローカルLLM対応（次回優先）
-- [ ] **Gemma 2 をローカルPCで実行して精度検証**
-  - 目的: 従量課金API（OpenAI/Gemini）のコスト削減
-  - 候補モデル: Gemma 2 9B / 27B、Llama 3.1 8B
-  - 実行方法: Ollama または llama.cpp
-  - 検証項目: 翻訳品質、レイテンシ、メモリ使用量
-- [ ] モデル切り替えUIにローカルLLM追加
+### 2025-01-24 セッション完了 ✅
+- [x] **ローカルLLM (Gemma 3 4B) 検証成功**
+  - LM Studio (Windows) + GPU (RTX 3060 6GB) で動作確認
+  - 応答速度: **230ms〜650ms**（API同等以上）
+  - 翻訳品質: 高い（自然な日本語）
+  - コスト: **無料**
+  - 接続先: `http://192.168.0.183:1234` (OpenAI互換API)
+
+### 2025-01-25 セッション完了 ✅
+- [x] **ローカルLLM対応を試行**
+  - LM Studio: 並列リクエストでクラッシュ多発（セマフォ/ロックでも解決せず）
+  - Ollama: 同様にGPUリソース枯渇でWindows強制シャットダウン
+  - **結論**: RTX 3060 6GBでは並列リアルタイム翻訳に不向き
+- [x] **Groq API対応を追加**
+  - 無料枠: 30 req/min, 最大500k tokens/day
+  - 超高速推論（800+ tokens/sec）
+  - OpenAI互換APIで実装
+- [x] **4モデル選択UI**
+  - GPT-4o-mini / Gemini 2.5 Flash / Gemma 3 (ローカル) / **Groq**
+  - 通常版・実験版の両方で切り替え可能
+- [x] **Groqサブモデル選択（4モデル）**
+  - Llama 4 Maverick 17B (最速: 413ms)
+  - Llama 3.3 70B (推奨: 480ms)
+  - Llama 3.1 8B (軽量: 377ms)
+  - GPT-OSS 120B (高品質: 662ms)
+- [x] **全モデル速度・品質比較検証**
+  - Groq全11モデルをテスト
+  - **最速**: Llama 4 Maverick (413ms)
+  - **最高品質**: GPT-OSS 120B, Llama 3.3 70B
+- [x] **API料金比較**
+  | プロバイダー | 5時間コスト | 速度 |
+  |-------------|------------|------|
+  | Gemini 2.0 Flash | $1.17 (175円) | 954ms |
+  | OpenAI GPT-4o-mini | $1.74 (261円) | 1976ms |
+  | Groq Llama 4 Maverick | $3.43 (515円) | **463ms** |
+  - **結論**: Groqは高いが最速。リアルタイム向き
+
+### 今後の予定
+- [ ] **ngrok経由で外出先からローカルLLMを使う構成の検討**
 
 ### 追加改善案
 - [ ] 日本語→英語の双方向対応
@@ -108,6 +140,8 @@
 - Deepgram SDK (nova-2モデル)
 - OpenAI API (gpt-4o-mini, Streaming)
 - Google Generative AI (gemini-2.5-flash-lite)
+- LM Studio + Gemma 3 4B (ローカルLLM)
+- **Groq API (llama-4-maverick, llama-3.3-70b, llama-3.1-8b, gpt-oss-120b)** ← NEW
 
 ### Frontend
 - React 18 + TypeScript
@@ -141,6 +175,7 @@ npm run dev
 DEEPGRAM_API_KEY=your_deepgram_key
 OPENAI_API_KEY=your_openai_key
 GOOGLE_API_KEY=your_google_api_key
+GROQ_API_KEY=your_groq_api_key
 ```
 
 ## 評価指標（CLAUDE.mdより）

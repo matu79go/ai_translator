@@ -247,8 +247,27 @@ function App() {
 
   // モード切り替え
   const [isFinalOnly, setIsFinalOnly] = useState(false);
-  // LLMモデル切り替え
-  const [model, setModel] = useState<'gpt4' | 'gemini'>('gpt4');
+  // LLMモデル切り替え（4モデル対応）
+  type ModelType = 'gpt4' | 'gemini' | 'gemma' | 'groq';
+  const [model, setModel] = useState<ModelType>('gpt4');
+
+  // Groqサブモデル
+  type GroqModelType = 'llama-3.1-8b-instant' | 'llama-3.3-70b-versatile' | 'meta-llama/llama-4-maverick-17b-128e-instruct' | 'openai/gpt-oss-120b';
+  const [groqModel, setGroqModel] = useState<GroqModelType>('meta-llama/llama-4-maverick-17b-128e-instruct');
+
+  const MODEL_OPTIONS: { value: ModelType; label: string; color: string }[] = [
+    { value: 'gpt4', label: 'GPT-4', color: 'bg-emerald-600' },
+    { value: 'gemini', label: 'Gemini', color: 'bg-blue-600' },
+    { value: 'gemma', label: 'Gemma 3 (ローカル)', color: 'bg-orange-600' },
+    { value: 'groq', label: 'Groq', color: 'bg-pink-600' },
+  ];
+
+  const GROQ_MODEL_OPTIONS: { value: GroqModelType; label: string }[] = [
+    { value: 'meta-llama/llama-4-maverick-17b-128e-instruct', label: 'Llama 4 Maverick (最速)' },
+    { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (推奨)' },
+    { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B' },
+    { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (高品質)' },
+  ];
 
   // WebSocket URL: httpsならwss、httpならws
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -271,11 +290,15 @@ function App() {
     sendControl({ type: 'set_mode', is_final_only: newMode });
   }, [isFinalOnly, sendControl]);
 
-  const toggleModel = useCallback(() => {
-    const newModel = model === 'gpt4' ? 'gemini' : 'gpt4';
+  const selectModel = useCallback((newModel: ModelType) => {
     setModel(newModel);
     sendControl({ type: 'set_model', model: newModel });
-  }, [model, sendControl]);
+  }, [sendControl]);
+
+  const selectGroqModel = useCallback((newGroqModel: GroqModelType) => {
+    setGroqModel(newGroqModel);
+    sendControl({ type: 'set_groq_model', groq_model: newGroqModel });
+  }, [sendControl]);
 
   // 接続時に設定を同期
   useEffect(() => {
@@ -285,6 +308,9 @@ function App() {
       }
       if (model !== 'gpt4') {
         sendControl({ type: 'set_model', model });
+      }
+      if (model === 'groq') {
+        sendControl({ type: 'set_groq_model', groq_model: groqModel });
       }
     }
   }, [isConnected]);
@@ -362,17 +388,38 @@ function App() {
               実験版（推測翻訳）
             </Link>
           </div>
-          <div className="flex justify-center items-center gap-2 mt-2">
-            <button
-              onClick={toggleModel}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-90 ${
-                model === 'gpt4'
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-blue-600 text-white'
-              }`}
-            >
-              {model === 'gpt4' ? 'GPT-4' : 'Gemini'}
-            </button>
+          <div className="flex justify-center items-center gap-2 mt-2 flex-wrap">
+            {/* モデル選択（4択） */}
+            <div className="flex gap-1">
+              {MODEL_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => selectModel(opt.value)}
+                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    model === opt.value
+                      ? `${opt.color} text-white`
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {/* Groqサブモデル選択 */}
+            {model === 'groq' && (
+              <select
+                value={groqModel}
+                onChange={(e) => selectGroqModel(e.target.value as GroqModelType)}
+                className="px-3 py-2 rounded-lg text-sm font-medium bg-pink-100 text-pink-800 border border-pink-300"
+              >
+                {GROQ_MODEL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            {/* モード切り替え */}
             <button
               onClick={toggleMode}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-90 ${
@@ -510,6 +557,7 @@ function App() {
           <div className="max-w-5xl mx-auto p-3">
             <div className="flex items-center gap-2 mb-2">
               <span className="font-semibold">サマリー</span>
+              {model === 'gemma' && <span className="text-xs bg-white/30 px-2 py-0.5 rounded">GPT-4で生成</span>}
               {isStreaming && <span className="text-xs bg-white/20 px-2 py-0.5 rounded animate-pulse">更新中...</span>}
               {topics.length > 0 && (
                 <div className="flex flex-wrap gap-1 ml-auto">

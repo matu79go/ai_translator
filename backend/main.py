@@ -42,6 +42,7 @@ app.add_middleware(
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # OpenAI clients (async for GPT-4, sync for GPT-5)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -55,7 +56,25 @@ else:
     gemini_model = None
 
 # LLMモデル型
-LLMModel = Literal["gpt4", "gpt5", "gemini"]
+LLMModel = Literal["gpt4", "gpt5", "gemini", "gemma", "groq"]
+
+# Groqモデル設定（UIから切り替え可能）
+GroqModel = Literal[
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "openai/gpt-oss-120b"
+]
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+groq_client = AsyncOpenAI(base_url=GROQ_BASE_URL, api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+groq_model_name: GroqModel = "llama-3.3-70b-versatile"  # デフォルトモデル（高速・高品質）
+
+# Ollama (Gemma 3 4B) 設定
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.0.183:11434/v1")
+gemma_client = AsyncOpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+# Gemmaは同時リクエスト不可なのでロックで制限
+gemma_lock = asyncio.Lock()
+gemma_pending_text: str | None = None  # 待機中のテキスト（最新のみ保持）
 
 # キーワード→トピック予測マッピング（即時応答用）
 KEYWORD_TOPICS = {
@@ -256,10 +275,14 @@ class SummaryGenerator:
         if len(self.transcript_history) >= 2:
             if self.model == "gemini":
                 await self._generate_summary_gemini()
+            elif self.model == "gemma":
+                # Gemma（ローカルLLM）は同時リクエスト不可のため、サマリーはGPT-4を使用
+                print(f"[Summary] Gemma selected, but using GPT-4 for summary (concurrent requests not supported)", flush=True)
+                await self._generate_summary_streaming(use_gpt4_fallback=True)
             else:
                 await self._generate_summary_streaming()
 
-    async def _generate_summary_streaming(self):
+    async def _generate_summary_streaming(self, use_gpt4_fallback: bool = False):
         """ストリーミングでサマリーを生成"""
         if not openai_client:
             return
@@ -270,7 +293,8 @@ class SummaryGenerator:
         self.last_summary_hash = current_hash
 
         all_text = "\n".join(self.transcript_history)
-        print(f"[Summary] Streaming summary for {len(self.transcript_history)} utterances")
+        provider_note = " (GPT-4 fallback)" if use_gpt4_fallback else ""
+        print(f"[Summary{provider_note}] Streaming summary for {len(self.transcript_history)} utterances")
 
         try:
             stream = await openai_client.chat.completions.create(
@@ -392,6 +416,7 @@ class IntentEstimator:
             return
         if self.model == "gemini" and not gemini_model:
             return
+        # gemmaはgemma_clientを使用（常に利用可能）
         if not text.strip():
             return
 
@@ -441,6 +466,10 @@ class IntentEstimator:
         """ストリーミングでLLMを呼び出して意図を推定"""
         if self.model == "gemini":
             await self._call_gemini(text, is_final)
+        elif self.model == "gemma":
+            await self._call_gemma(text, is_final)
+        elif self.model == "groq":
+            await self._call_groq(text, is_final)
         elif self.model == "gpt5":
             await self._call_gpt5(text, is_final)
         else:
@@ -604,6 +633,172 @@ class IntentEstimator:
         except Exception as e:
             print(f"[Gemini] Error: {type(e).__name__}: {e}")
 
+    async def _call_gemma(self, text: str, is_final: bool):
+        """Gemma 3 (Ollama) APIでストリーミング - 並列リクエスト対応"""
+        self.last_call_time = time.time() * 1000
+        start_time = time.time()
+
+        # 実験モードの場合は専用プロンプト
+        if self.experimental:
+            system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
+            mode = "EXPERIMENTAL"
+        elif is_final:
+            system_prompt = INTENT_SYSTEM_PROMPT_QUALITY
+            mode = "QUALITY"
+        else:
+            system_prompt = INTENT_SYSTEM_PROMPT_SPEED
+            mode = "SPEED"
+        print(f"[Gemma] Start streaming [{mode}] for: {text[:30]}...", flush=True)
+
+        context = ""
+        if self.context_history:
+            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+
+        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+
+        try:
+            stream = await gemma_client.chat.completions.create(
+                model="gemma3:4b",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=500,
+                stream=True,
+            )
+
+            full_response = ""
+            sent_intent_partial = False
+            sent_translation_partial = False
+            sent_speculative = False
+            first_chunk_time = None
+
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    if first_chunk_time is None:
+                        first_chunk_time = time.time()
+                        print(f"[Gemma] First chunk in {(first_chunk_time - start_time)*1000:.0f}ms", flush=True)
+
+                    full_response += chunk.choices[0].delta.content
+
+                    # 実験モード: speculative_translation を先に送信
+                    if self.experimental and not sent_speculative and '"speculative_translation"' in full_response:
+                        try:
+                            match = re.search(r'"speculative_translation"\s*:\s*"([^"]+)"', full_response)
+                            if match:
+                                speculative = match.group(1)
+                                spec_time = (time.time() - start_time) * 1000
+                                print(f"[Gemma] @{spec_time:.0f}ms SPECULATIVE: {speculative[:40]}...", flush=True)
+                                await self.websocket.send_json({
+                                    "type": "speculative_translation",
+                                    "translation": speculative,
+                                    "source_text": text,
+                                })
+                                sent_speculative = True
+                        except:
+                            pass
+
+                    await self._process_streaming_chunk(
+                        full_response, text, sent_intent_partial, sent_translation_partial
+                    )
+                    if not sent_intent_partial and '"intent_label"' in full_response:
+                        sent_intent_partial = True
+                    if not sent_translation_partial and '"full_translation"' in full_response:
+                        full_time = (time.time() - start_time) * 1000
+                        print(f"[Gemma] @{full_time:.0f}ms FULL_TRANSLATION detected", flush=True)
+                        sent_translation_partial = True
+
+            await self._finalize_response(full_response, text, is_final, start_time, "Gemma")
+
+        except Exception as e:
+            print(f"[Gemma] Error: {type(e).__name__}: {e}")
+
+    async def _call_groq(self, text: str, is_final: bool):
+        """Groq APIでストリーミング（超高速）"""
+        if not groq_client:
+            print("[Groq] Client not configured (missing GROQ_API_KEY)", flush=True)
+            return
+
+        self.last_call_time = time.time() * 1000
+        start_time = time.time()
+
+        # 実験モードの場合は専用プロンプト
+        if self.experimental:
+            system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
+            mode = "EXPERIMENTAL"
+        elif is_final:
+            system_prompt = INTENT_SYSTEM_PROMPT_QUALITY
+            mode = "QUALITY"
+        else:
+            system_prompt = INTENT_SYSTEM_PROMPT_SPEED
+            mode = "SPEED"
+        print(f"[Groq/{groq_model_name}] Start streaming [{mode}] for: {text[:30]}...", flush=True)
+
+        context = ""
+        if self.context_history:
+            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+
+        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+
+        try:
+            stream = await groq_client.chat.completions.create(
+                model=groq_model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=500,
+                stream=True,
+            )
+
+            full_response = ""
+            sent_intent_partial = False
+            sent_translation_partial = False
+            sent_speculative = False
+            first_chunk_time = None
+
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    if first_chunk_time is None:
+                        first_chunk_time = time.time()
+                        print(f"[Groq] First chunk in {(first_chunk_time - start_time)*1000:.0f}ms", flush=True)
+
+                    full_response += chunk.choices[0].delta.content
+
+                    # 実験モード: speculative_translation を先に送信
+                    if self.experimental and not sent_speculative and '"speculative_translation"' in full_response:
+                        try:
+                            match = re.search(r'"speculative_translation"\s*:\s*"([^"]+)"', full_response)
+                            if match:
+                                speculative = match.group(1)
+                                spec_time = (time.time() - start_time) * 1000
+                                print(f"[Groq] @{spec_time:.0f}ms SPECULATIVE: {speculative[:40]}...", flush=True)
+                                await self.websocket.send_json({
+                                    "type": "speculative_translation",
+                                    "translation": speculative,
+                                    "source_text": text,
+                                })
+                                sent_speculative = True
+                        except:
+                            pass
+
+                    await self._process_streaming_chunk(
+                        full_response, text, sent_intent_partial, sent_translation_partial
+                    )
+                    if not sent_intent_partial and '"intent_label"' in full_response:
+                        sent_intent_partial = True
+                    if not sent_translation_partial and '"full_translation"' in full_response:
+                        full_time = (time.time() - start_time) * 1000
+                        print(f"[Groq] @{full_time:.0f}ms FULL_TRANSLATION detected", flush=True)
+                        sent_translation_partial = True
+
+            await self._finalize_response(full_response, text, is_final, start_time, f"Groq/{groq_model_name}")
+
+        except Exception as e:
+            print(f"[Groq] Error: {type(e).__name__}: {e}")
+
     async def _process_streaming_chunk(self, full_response: str, text: str,
                                         sent_intent: bool, sent_translation: bool):
         """ストリーミングチャンクを処理して部分結果を送信"""
@@ -680,11 +875,19 @@ class TranscriptionManager:
         self.intent_estimator.min_words = min_words
         print(f"[Config] min_words set to {min_words}", flush=True)
 
-    def set_model(self, model: LLMModel):
-        """LLMモデルを切り替え（IntentEstimatorとSummaryGenerator両方）"""
+    def set_model(self, model: LLMModel) -> bool:
+        """LLMモデルを切り替え（IntentEstimatorとSummaryGenerator両方）
+        Returns: Gemmaの場合True（FINAL_ONLYモード強制を通知するため）"""
         self.intent_estimator.model = model
         self.summary_generator.model = model
         print(f"[Model] Switched to {model.upper()} (intent + summary)", flush=True)
+
+        # Ollama (Gemma) は並列リクエスト対応のため、FINAL_ONLY強制は不要
+        # if model == "gemma":
+        #     self.intent_estimator.is_final_only = True
+        #     print(f"[Model] Gemma selected: forcing FINAL_ONLY mode (parallel requests not supported)", flush=True)
+        #     return True
+        return False
 
     def set_experimental(self, enabled: bool):
         """実験モード（推測翻訳）を切り替え"""
@@ -817,6 +1020,7 @@ async def health():
 
 @app.websocket("/ws/audio")
 async def websocket_audio(websocket: WebSocket):
+    global groq_model_name
     await websocket.accept()
     print("WebSocket connection established")
 
@@ -857,13 +1061,39 @@ async def websocket_audio(websocket: WebSocket):
                         "min_words": min_words
                     })
                 elif msg_type == "set_model":
-                    # LLMモデル切り替え: {"type": "set_model", "model": "gpt4" | "gpt5" | "gemini"}
+                    # LLMモデル切り替え: {"type": "set_model", "model": "gpt4" | "gpt5" | "gemini" | "gemma" | "groq"}
                     model = message.get("model", "gpt4")
-                    if model in ("gpt4", "gpt5", "gemini"):
-                        manager.set_model(model)
+                    if model in ("gpt4", "gpt5", "gemini", "gemma", "groq"):
+                        forced_final_only = manager.set_model(model)
                         await websocket.send_json({
                             "type": "model_changed",
-                            "model": model
+                            "model": model,
+                            "forced_final_only": forced_final_only,
+                            "groq_model": groq_model_name if model == "groq" else None
+                        })
+                        # Gemmaの場合、モード変更も通知
+                        if forced_final_only:
+                            await websocket.send_json({
+                                "type": "mode_changed",
+                                "is_final_only": True,
+                                "mode_name": "FINAL_ONLY",
+                                "reason": "gemma"  # Gemmaによる強制
+                            })
+                elif msg_type == "set_groq_model":
+                    # Groqモデル切り替え
+                    new_groq_model = message.get("groq_model", "llama-3.3-70b-versatile")
+                    valid_groq_models = (
+                        "llama-3.1-8b-instant",
+                        "llama-3.3-70b-versatile",
+                        "meta-llama/llama-4-maverick-17b-128e-instruct",
+                        "openai/gpt-oss-120b"
+                    )
+                    if new_groq_model in valid_groq_models:
+                        groq_model_name = new_groq_model
+                        print(f"[Groq] Model switched to {groq_model_name}", flush=True)
+                        await websocket.send_json({
+                            "type": "groq_model_changed",
+                            "groq_model": groq_model_name
                         })
                 elif msg_type == "set_experimental":
                     # 実験モード切り替え: {"type": "set_experimental", "enabled": true/false}
