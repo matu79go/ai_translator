@@ -29,11 +29,12 @@ const DIALOGUE_ACT_LABELS: Record<string, { label: string; color: string }> = {
 };
 
 // LLMモデル型
-type ModelType = 'gpt4' | 'gemini' | 'gemma' | 'groq';
+type ModelType = 'gpt4' | 'gemini' | 'gemma' | 'groq' | 'lmstudio';
 const MODEL_OPTIONS: { value: ModelType; label: string; color: string }[] = [
   { value: 'gpt4', label: 'GPT-4', color: 'bg-emerald-600' },
   { value: 'gemini', label: 'Gemini', color: 'bg-blue-600' },
-  { value: 'gemma', label: 'Gemma 3 (ローカル)', color: 'bg-orange-600' },
+  { value: 'gemma', label: 'Gemma 3 (Ollama)', color: 'bg-orange-600' },
+  { value: 'lmstudio', label: 'LM Studio', color: 'bg-purple-600' },
   { value: 'groq', label: 'Groq', color: 'bg-pink-600' },
 ];
 
@@ -52,7 +53,7 @@ function ExperimentalApp() {
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<string>('未接続');
   const [displayMode, setDisplayMode] = useState<DisplayMode>('separate');
-  // LLMモデル切り替え（4モデル対応）
+  // LLMモデル切り替え（5モデル対応）
   const [model, setModel] = useState<ModelType>('gpt4');
   // Groqサブモデル
   const [groqModel, setGroqModel] = useState<GroqModelType>('meta-llama/llama-4-maverick-17b-128e-instruct');
