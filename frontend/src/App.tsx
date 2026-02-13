@@ -54,6 +54,25 @@ function App() {
   const [hints, setHints] = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [status, setStatus] = useState<string>('未接続');
+  // TTS（翻訳読み上げ）
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+
+  const ttsEnabledRef = useRef(ttsEnabled);
+  useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
+
+  const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+  const ttsRate = isMobile ? 1.3 : 3.0;
+  const lastSpokenRef = useRef<string>('');
+
+  const speakTranslation = useCallback((text: string) => {
+    if (!ttsEnabledRef.current) return;
+    if (lastSpokenRef.current === text) return;
+    lastSpokenRef.current = text;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'ja-JP';
+    utterance.rate = ttsRate;
+    window.speechSynthesis.speak(utterance);
+  }, [ttsRate]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
     switch (message.type) {
@@ -129,6 +148,10 @@ function App() {
       case 'intent': {
         setCurrentIntent(message.data);
         setPartialIntentLabel(''); // 完全な結果が来たらpartialをクリア
+        // TTS: 翻訳を読み上げ（重複はspeakTranslation内で防止）
+        if (message.data.full_translation) {
+          speakTranslation(message.data.full_translation);
+        }
         // リアルタイム意図履歴に追加（重複チェック）
         if (message.data.intent_label) {
           setRealtimeIntents((prev) => {
@@ -227,7 +250,7 @@ function App() {
         setStatus(`エラー: ${message.message}`);
         break;
     }
-  }, []);
+  }, [speakTranslation]);
 
   const handleOpen = useCallback(() => {
     setStatus('接続中...');
@@ -420,6 +443,27 @@ function App() {
                 ))}
               </select>
             )}
+            {/* TTS切り替え */}
+            <button
+              onClick={() => {
+                if (ttsEnabled) {
+                  window.speechSynthesis.cancel();
+                } else {
+                  // モバイルブラウザ対策: ユーザータップで無音発話してロック解除
+                  const unlock = new SpeechSynthesisUtterance('');
+                  unlock.volume = 0;
+                  window.speechSynthesis.speak(unlock);
+                }
+                setTtsEnabled(!ttsEnabled);
+              }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-90 ${
+                ttsEnabled
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-gray-300 text-gray-600'
+              }`}
+            >
+              {ttsEnabled ? '🔊 TTS ON' : '🔇 TTS OFF'}
+            </button>
             {/* モード切り替え */}
             <button
               onClick={toggleMode}

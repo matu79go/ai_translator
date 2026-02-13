@@ -63,6 +63,25 @@ function ExperimentalApp() {
   const [topics, setTopics] = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const summaryEndRef = useRef<HTMLDivElement>(null);
+  // TTS（翻訳読み上げ）
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const ttsEnabledRef = useRef(ttsEnabled);
+  useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
+
+  const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+  const ttsRate = isMobile ? 1.3 : 3.0;
+  const lastSpokenRef = useRef<string>('');
+
+  const speakTranslation = useCallback((text: string) => {
+    if (!ttsEnabledRef.current) return;
+    // 同じ翻訳の重複読み上げを防止
+    if (lastSpokenRef.current === text) return;
+    lastSpokenRef.current = text;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'ja-JP';
+    utterance.rate = ttsRate;
+    window.speechSynthesis.speak(utterance);
+  }, [ttsRate]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
     switch (message.type) {
@@ -125,6 +144,10 @@ function ExperimentalApp() {
       case 'intent': {
         // 完全な結果
         const data = message.data as IntentData & { speculative_translation?: string };
+        // TTS: 翻訳を読み上げ（重複はspeakTranslation内で防止）
+        if (data.full_translation) {
+          speakTranslation(data.full_translation);
+        }
         setTimeline((prev) => {
           const lastPartialIndex = prev.findLastIndex((e) => !e.isFinal);
           // 既存の推測訳を保持（上書きしない）
@@ -173,7 +196,7 @@ function ExperimentalApp() {
         setStatus(`エラー: ${message.message}`);
         break;
     }
-  }, []);
+  }, [speakTranslation]);
 
   const handleOpen = useCallback(() => {
     setStatus('接続中...');
@@ -335,7 +358,7 @@ function ExperimentalApp() {
             </div>
           )}
 
-          {/* 表示モード切り替え */}
+          {/* 表示モード切り替え + TTS */}
           <div className="flex justify-center gap-2 mt-2 mb-2">
             <button
               onClick={() => setDisplayMode('separate')}
@@ -356,6 +379,26 @@ function ExperimentalApp() {
               }`}
             >
               上書き表示
+            </button>
+            <button
+              onClick={() => {
+                if (ttsEnabled) {
+                  window.speechSynthesis.cancel();
+                } else {
+                  // モバイルブラウザ対策: ユーザータップで無音発話してロック解除
+                  const unlock = new SpeechSynthesisUtterance('');
+                  unlock.volume = 0;
+                  window.speechSynthesis.speak(unlock);
+                }
+                setTtsEnabled(!ttsEnabled);
+              }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-90 ${
+                ttsEnabled
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-gray-300 text-gray-600'
+              }`}
+            >
+              {ttsEnabled ? '🔊 TTS ON' : '🔇 TTS OFF'}
             </button>
           </div>
           <div className="mt-2 text-sm text-gray-500">{status}</div>

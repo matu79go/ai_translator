@@ -17,25 +17,63 @@ export function AudioRecorder({
   const [isRecording, setIsRecording] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // マイク選択
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
+  // 利用可能なマイク一覧を取得
+  const refreshDevices = useCallback(async () => {
+    try {
+      // 権限を取得するために一度getUserMediaを呼ぶ（デバイスラベル取得に必要）
+      const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      tempStream.getTracks().forEach(t => t.stop());
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter(d => d.kind === 'audioinput');
+      setAudioDevices(mics);
+      // 未選択なら最初のデバイスを選択
+      if (!selectedDeviceId && mics.length > 0) {
+        setSelectedDeviceId(mics[0].deviceId);
+      }
+    } catch (err) {
+      console.error('Failed to enumerate devices:', err);
+    }
+  }, [selectedDeviceId]);
+
+  // 初回マウント時にデバイス一覧を取得
+  useEffect(() => {
+    refreshDevices();
+  }, []);
+
+  // デバイス変更を監視（Bluetooth接続/切断時など）
+  useEffect(() => {
+    const handler = () => refreshDevices();
+    navigator.mediaDevices.addEventListener('devicechange', handler);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', handler);
+  }, [refreshDevices]);
+
   const startRecording = useCallback(async () => {
     setError(null);
     setIsInitializing(true);
 
     try {
-      // マイクアクセスを要求
+      // マイクアクセスを要求（選択されたデバイスを指定）
+      const audioConstraints: MediaTrackConstraints = {
+        channelCount: 1,
+        sampleRate: 16000,
+        echoCancellation: true,
+        noiseSuppression: true,
+      };
+      if (selectedDeviceId) {
+        audioConstraints.deviceId = selectedDeviceId;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
+        audio: audioConstraints,
       });
 
       mediaStreamRef.current = stream;
@@ -79,7 +117,7 @@ export function AudioRecorder({
     } finally {
       setIsInitializing(false);
     }
-  }, [onStart, onAudioData]);
+  }, [onStart, onAudioData, selectedDeviceId]);
 
   const stopRecording = useCallback(() => {
     // プロセッサーを停止
@@ -129,6 +167,25 @@ export function AudioRecorder({
 
   return (
     <div className="flex flex-col items-center gap-4">
+      {/* マイク選択（複数デバイスがある場合のみ表示） */}
+      {audioDevices.length > 1 && (
+        <div className="flex items-center gap-2 w-full max-w-sm">
+          <label className="text-xs text-gray-500 whitespace-nowrap">マイク:</label>
+          <select
+            value={selectedDeviceId}
+            onChange={(e) => setSelectedDeviceId(e.target.value)}
+            disabled={isRecording}
+            className="flex-1 text-sm px-2 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          >
+            {audioDevices.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label || `マイク ${device.deviceId.slice(0, 8)}`}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <button
         onClick={handleClick}
         disabled={isInitializing}
