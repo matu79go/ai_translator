@@ -2,6 +2,8 @@
 
 A real-time speech translation prototype that shows **speculative translations before the speaker finishes talking**, powered by LLM intent estimation.
 
+![Demo](docs/screenshot.gif)
+
 Traditional translation tools wait for a complete sentence before translating. This project takes a different approach: it analyzes the speaker's **intent** (dialogue act + intent label) from partial speech and generates a speculative translation immediately, then refines it once the sentence is finalized. This reduces perceived latency by ~500ms-1s.
 
 ## How It Works
