@@ -46,6 +46,22 @@ const GROQ_MODEL_OPTIONS: { value: GroqModelType; label: string }[] = [
   { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (High Quality)' },
 ];
 
+// Language options
+type LanguageCode = 'en' | 'ja' | 'es' | 'zh';
+const LANGUAGE_OPTIONS: { value: LanguageCode; label: string }[] = [
+  { value: 'en', label: 'English' },
+  { value: 'ja', label: 'Japanese' },
+  { value: 'es', label: 'Spanish' },
+  { value: 'zh', label: 'Chinese' },
+];
+
+const TTS_LANG_MAP: Record<LanguageCode, string> = {
+  en: 'en-US',
+  ja: 'ja-JP',
+  es: 'es-ES',
+  zh: 'zh-CN',
+};
+
 function ExperimentalApp() {
   const [currentTranscript, setCurrentTranscript] = useState<string>('');
   const [timeline, setTimeline] = useState<SpeculativeEntry[]>([]);
@@ -56,6 +72,9 @@ function ExperimentalApp() {
   const [model, setModel] = useState<ModelType>('gpt4');
   // Groq sub-model
   const [groqModel, setGroqModel] = useState<GroqModelType>('meta-llama/llama-4-maverick-17b-128e-instruct');
+  // Language selection
+  const [sourceLang, setSourceLang] = useState<LanguageCode>('en');
+  const [targetLang, setTargetLang] = useState<LanguageCode>('ja');
   // Summary
   const [summary, setSummary] = useState<string>('');
   const [summaryHistory, setSummaryHistory] = useState<string[]>([]);
@@ -77,10 +96,10 @@ function ExperimentalApp() {
     if (lastSpokenRef.current === text) return;
     lastSpokenRef.current = text;
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'ja-JP';
+    utterance.lang = TTS_LANG_MAP[targetLang];
     utterance.rate = ttsRate;
     window.speechSynthesis.speak(utterance);
-  }, [ttsRate]);
+  }, [ttsRate, targetLang]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
     switch (message.type) {
@@ -237,10 +256,38 @@ function ExperimentalApp() {
     sendControl({ type: 'set_groq_model', groq_model: newGroqModel });
   }, [sendControl]);
 
-  // Enable experimental mode on connection + sync model settings
+  // Language selection
+  const selectSourceLang = useCallback((lang: LanguageCode) => {
+    // If same as target, swap them
+    if (lang === targetLang) {
+      setTargetLang(sourceLang);
+    }
+    setSourceLang(lang);
+    sendControl({ type: 'set_languages', source: lang, target: lang === targetLang ? sourceLang : targetLang });
+  }, [sendControl, sourceLang, targetLang]);
+
+  const selectTargetLang = useCallback((lang: LanguageCode) => {
+    // If same as source, swap them
+    if (lang === sourceLang) {
+      setSourceLang(targetLang);
+    }
+    setTargetLang(lang);
+    sendControl({ type: 'set_languages', source: lang === sourceLang ? targetLang : sourceLang, target: lang });
+  }, [sendControl, sourceLang, targetLang]);
+
+  const swapLanguages = useCallback(() => {
+    const newSource = targetLang;
+    const newTarget = sourceLang;
+    setSourceLang(newSource);
+    setTargetLang(newTarget);
+    sendControl({ type: 'set_languages', source: newSource, target: newTarget });
+  }, [sendControl, sourceLang, targetLang]);
+
+  // Enable experimental mode on connection + sync all settings
   useEffect(() => {
     if (isConnected) {
       sendControl({ type: 'set_experimental', enabled: true });
+      sendControl({ type: 'set_languages', source: sourceLang, target: targetLang });
       if (model !== 'gpt4') {
         sendControl({ type: 'set_model', model });
       }
@@ -248,7 +295,7 @@ function ExperimentalApp() {
         sendControl({ type: 'set_groq_model', groq_model: groqModel });
       }
     }
-  }, [isConnected, sendControl, model, groqModel]);
+  }, [isConnected, sendControl, model, groqModel, sourceLang, targetLang]);
 
   const handleAudioData = useCallback(
     (data: ArrayBuffer) => {
@@ -307,8 +354,37 @@ function ExperimentalApp() {
             Speculative translation driven by dialogue_act + intent_label
           </p>
 
+          {/* Language selection */}
+          <div className="flex justify-center items-center gap-2 mt-3 mb-3">
+            <select
+              value={sourceLang}
+              onChange={(e) => selectSourceLang(e.target.value as LanguageCode)}
+              className="px-3 py-2 rounded-lg text-sm font-medium border-2 border-orange-300 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-500"
+            >
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={swapLanguages}
+              className="px-3 py-2 rounded-lg text-sm font-bold bg-orange-200 text-orange-700 hover:bg-orange-300 transition-colors"
+              title="Swap languages"
+            >
+              ⇄
+            </button>
+            <select
+              value={targetLang}
+              onChange={(e) => selectTargetLang(e.target.value as LanguageCode)}
+              className="px-3 py-2 rounded-lg text-sm font-medium border-2 border-green-300 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Model selection */}
-          <div className="flex justify-center gap-1 mt-3 mb-2">
+          <div className="flex justify-center gap-1 mt-2 mb-2">
             {MODEL_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
@@ -382,7 +458,7 @@ function ExperimentalApp() {
                   : 'bg-gray-300 text-gray-600'
               }`}
             >
-              {ttsEnabled ? '🔊 TTS ON' : '🔇 TTS OFF'}
+              {ttsEnabled ? 'TTS ON' : 'TTS OFF'}
             </button>
           </div>
           <div className="mt-2 text-sm text-gray-500">{status}</div>
@@ -408,7 +484,7 @@ function ExperimentalApp() {
         <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-lg font-semibold text-gray-700">
-              {displayMode === 'separate' ? 'Speculative vs Final' : 'Real-time Translation (Speculative → Final)'}
+              {displayMode === 'separate' ? 'Speculative vs Final' : 'Real-time Translation (Speculative \u2192 Final)'}
             </h2>
             {timeline.length > 0 && (
               <button
@@ -424,7 +500,7 @@ function ExperimentalApp() {
               <p className="text-gray-400 text-center py-8">
                 {displayMode === 'separate'
                   ? 'Start speaking to compare speculative and final translations'
-                  : 'Start speaking — speculative translation appears first, then replaced by final'
+                  : 'Start speaking \u2014 speculative translation appears first, then replaced by final'
                 }
               </p>
             ) : (
@@ -472,11 +548,11 @@ function ExperimentalApp() {
                           <p className={`text-lg pl-1 ${
                             translationStatus === 'final' ? 'text-green-800' : 'text-orange-800'
                           }`}>
-                            → {translation}
+                            {'\u2192'} {translation}
                           </p>
                         ) : (
                           <p className="text-gray-400 text-sm pl-1 animate-pulse">
-                            → Translating...
+                            {'\u2192'} Translating...
                           </p>
                         )}
                       </div>
@@ -536,7 +612,7 @@ function ExperimentalApp() {
                       {entry.speculativeTranslation && entry.finalTranslation &&
                        entry.speculativeTranslation !== entry.finalTranslation && (
                         <div className="mt-2 text-xs text-red-500 bg-red-50 p-2 rounded">
-                          ⚠ Speculative and final translations differ
+                          Speculative and final translations differ
                         </div>
                       )}
                     </div>
@@ -558,7 +634,7 @@ function ExperimentalApp() {
             ) : (
               <>
                 <strong>Overwrite:</strong> Shows speculative translation first, then replaces with final.
-                Translation appears ~500ms–1s faster.
+                Translation appears ~500ms{'\u2013'}1s faster.
               </>
             )}
           </p>

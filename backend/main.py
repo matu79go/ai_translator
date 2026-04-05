@@ -82,6 +82,23 @@ LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "gemma-3-4b-it")  # Model name load
 lmstudio_client = AsyncOpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lm-studio")
 lmstudio_lock = asyncio.Lock()  # Lock to prevent concurrent requests
 
+# Supported languages
+LanguageCode = Literal["en", "ja", "es", "zh"]
+
+LANG_NAMES = {
+    "en": "English",
+    "ja": "Japanese",
+    "es": "Spanish",
+    "zh": "Chinese",
+}
+
+DEEPGRAM_LANG_MAP = {
+    "en": "en-US",
+    "ja": "ja",
+    "es": "es",
+    "zh": "zh",
+}
+
 # Keyword → topic prediction mapping (for instant response)
 KEYWORD_TOPICS = {
     # Schedule / Time
@@ -126,104 +143,122 @@ KEYWORD_TOPICS = {
     "let's": "提案",
 }
 
-# Speed-focused prompt: minimal analysis → translation (for partial results)
-INTENT_SYSTEM_PROMPT_SPEED = """あなたはリアルタイム同時通訳AIです。
-英語の発話をリアルタイムで日本語に翻訳します。
+# Dynamic prompt builders based on source/target language
 
-処理順序（重要）:
-1. まず対話行為(dialogue_act)を判断
-2. 意図(intent_label)を抽出
-3. 重要情報(slots)を特定
-4. 上記を考慮して翻訳(full_translation)を生成
+def build_speed_prompt(source_lang: str, target_lang: str) -> str:
+    """Speed-focused prompt: minimal analysis → translation (for partial results)"""
+    src = LANG_NAMES.get(source_lang, "English")
+    tgt = LANG_NAMES.get(target_lang, "Japanese")
+    return f"""You are a real-time simultaneous interpreter.
+Translate {src} speech into {tgt} in real time.
 
-翻訳ルール:
-- 自然で流暢な日本語に翻訳してください
-- 文が途中でも、現時点で言いたいことを推測して完結した日本語にしてください
+Processing order (important):
+1. Determine dialogue_act
+2. Extract intent_label
+3. Identify key information (slots)
+4. Generate full_translation considering the above
 
-その他のルール:
-- intent_labelは日本語で10文字以内
-- 出力は必ず指定されたJSON形式で行ってください
+Translation rules:
+- Translate into natural, fluent {tgt}
+- Even if the sentence is incomplete, infer the intent and produce a complete {tgt} sentence
 
-出力JSON形式（この順序で出力すること）:
-{
+Other rules:
+- intent_label must be in {tgt}, max 10 characters/words
+- Output must be in the specified JSON format only
+
+Output JSON format (output in this order):
+{{
   "dialogue_act": "QUESTION | PROPOSAL | AGREEMENT | DISAGREEMENT | STATEMENT | GREETING | OTHER",
-  "intent_label": "短い日本語ラベル",
-  "slots": {"when": "", "who": "", "where": "", "what": ""},
-  "full_translation": "文脈を考慮した自然な日本語訳",
-  "key_terms": ["重要な単語"],
-  "confidence": 0.0〜1.0,
+  "intent_label": "short {tgt} label",
+  "slots": {{"when": "", "who": "", "where": "", "what": ""}},
+  "full_translation": "natural {tgt} translation considering context",
+  "key_terms": ["important words"],
+  "confidence": 0.0-1.0,
   "is_meaning_stable": true/false
-}
+}}
 
-注意: JSON以外の文字は出力しないでください。"""
+IMPORTANT: Output ONLY valid JSON, nothing else."""
 
-# Quality-focused prompt: analyze context first, then translate (for is_final results)
-INTENT_SYSTEM_PROMPT_QUALITY = """あなたはリアルタイム対話支援AIです。
-入力される英語から、話者の「意図」と「重要な単語」を抽出し、正確な翻訳を行ってください。
 
-ルール:
-- まず対話行為(dialogue_act)と重要情報(slots)を分析してください
-- その分析結果を踏まえて、文脈に即した正確な翻訳を行ってください
-- 出力は必ず指定されたJSON形式で行ってください
-- intent_labelは日本語で10文字以内
+def build_quality_prompt(source_lang: str, target_lang: str) -> str:
+    """Quality-focused prompt: analyze context first, then translate (for is_final results)"""
+    src = LANG_NAMES.get(source_lang, "English")
+    tgt = LANG_NAMES.get(target_lang, "Japanese")
+    return f"""You are a real-time interpretation assistant.
+Extract the speaker's intent and key information from {src} input, and provide an accurate {tgt} translation.
 
-出力JSON形式（この順序で出力すること）:
-{
+Rules:
+- First analyze dialogue_act and key information (slots)
+- Then provide an accurate, context-aware {tgt} translation based on your analysis
+- Output must be in the specified JSON format only
+- intent_label must be in {tgt}, max 10 characters/words
+
+Output JSON format (output in this order):
+{{
   "dialogue_act": "QUESTION | PROPOSAL | AGREEMENT | DISAGREEMENT | STATEMENT | GREETING | OTHER",
-  "slots": {"when": "", "who": "", "where": "", "what": ""},
-  "key_terms": ["重要な単語"],
-  "confidence": 0.0〜1.0,
+  "slots": {{"when": "", "who": "", "where": "", "what": ""}},
+  "key_terms": ["important words"],
+  "confidence": 0.0-1.0,
   "is_meaning_stable": true/false,
-  "intent_label": "短い日本語ラベル",
-  "full_translation": "文脈を考慮した正確な日本語訳"
-}
+  "intent_label": "short {tgt} label",
+  "full_translation": "accurate {tgt} translation considering context"
+}}
 
-注意: JSON以外の文字は出力しないでください。"""
+IMPORTANT: Output ONLY valid JSON, nothing else."""
 
-# Experimental prompt: output speculative translation first (speculative_translation)
-INTENT_SYSTEM_PROMPT_EXPERIMENTAL = """あなたはリアルタイム同時通訳AIです。
-人間の同時通訳者のように、文が完結する前に「推測」で翻訳を開始してください。
 
-処理順序（重要 - この順序で出力すること）:
-1. dialogue_act: 対話行為を即座に判断
-2. intent_label: 意図を10文字以内で抽出
-3. speculative_translation: ここで即座に推測翻訳を出力！（精度より速度優先）
-4. slots: 重要情報を特定
-5. full_translation: 全情報を考慮した正確な翻訳
+def build_experimental_prompt(source_lang: str, target_lang: str) -> str:
+    """Experimental prompt: output speculative translation first"""
+    src = LANG_NAMES.get(source_lang, "English")
+    tgt = LANG_NAMES.get(target_lang, "Japanese")
+    return f"""You are a real-time simultaneous interpreter.
+Like a human interpreter, start translating speculatively before the sentence is complete.
+Translate from {src} to {tgt}.
 
-推測翻訳のルール（速度最優先）:
-- dialogue_act + intent_label だけで推測する
-- 例: PROPOSAL + 「日程調整」 → 「日程について提案しています」
-- 例: QUESTION + 「確認依頼」 → 「確認を求めています」
-- 完璧でなくてよい、方向性が伝わればOK
+Processing order (important - output in this exact order):
+1. dialogue_act: determine the dialogue act immediately
+2. intent_label: extract intent in max 10 characters/words in {tgt}
+3. speculative_translation: output a speculative {tgt} translation NOW (speed over accuracy)
+4. slots: identify key information
+5. full_translation: accurate {tgt} translation considering all information
 
-出力JSON形式（この順序厳守）:
-{
+Speculative translation rules (speed first):
+- Speculate based on dialogue_act + intent_label alone
+- Does not need to be perfect, just convey the right direction
+- Example: PROPOSAL + "scheduling" → a brief {tgt} sentence about scheduling proposal
+
+Output JSON format (strict order):
+{{
   "dialogue_act": "QUESTION | PROPOSAL | AGREEMENT | DISAGREEMENT | STATEMENT | GREETING | OTHER",
-  "intent_label": "短い日本語ラベル",
-  "speculative_translation": "dialogue_act+intent_labelから即座に推測した翻訳",
-  "slots": {"when": "", "who": "", "where": "", "what": ""},
-  "full_translation": "全情報を考慮した正確な翻訳",
-  "confidence": 0.0〜1.0
-}
+  "intent_label": "short {tgt} label",
+  "speculative_translation": "speculative {tgt} translation from dialogue_act+intent_label",
+  "slots": {{"when": "", "who": "", "where": "", "what": ""}},
+  "full_translation": "accurate {tgt} translation considering all information",
+  "confidence": 0.0-1.0
+}}
 
-注意: JSON以外の文字は出力しないでください。"""
+IMPORTANT: Output ONLY valid JSON, nothing else."""
 
-SUMMARY_SYSTEM_PROMPT = """あなたは会話要約AIです。
-複数の発話から、会話全体の要約と主要なトピックを抽出してください。
 
-出力JSON形式:
-{
-  "summary": "会話全体の要約（日本語、100-150文字程度）",
-  "topics": ["トピック1", "トピック2"]
-}
+def build_summary_prompt(target_lang: str) -> str:
+    """Summary prompt in target language"""
+    tgt = LANG_NAMES.get(target_lang, "Japanese")
+    return f"""You are a conversation summarization AI.
+Extract an overall summary and main topics from multiple utterances.
+Output in {tgt}.
 
-ルール:
-- summaryは会話の内容・目的・結論を含む詳細な要約
-- 何について話しているか、何を決めようとしているかを明確に
-- topicsは最大5つまで
-- 日本語で出力
-- JSON以外の文字は出力しないでください"""
+Output JSON format:
+{{
+  "summary": "detailed summary of the conversation in {tgt} (100-150 chars/words)",
+  "topics": ["topic1", "topic2"]
+}}
+
+Rules:
+- summary should include the content, purpose, and conclusions of the conversation
+- Clearly state what is being discussed and what decisions are being made
+- topics: max 5
+- Output in {tgt}
+- Output ONLY valid JSON, nothing else"""
 
 
 class KeywordPredictor:
@@ -255,10 +290,11 @@ class SummaryGenerator:
     """Generates conversation summaries (streaming, multi-model)"""
 
     def __init__(self, websocket: WebSocket, silence_threshold_ms: int = 1500,
-                 model: LLMModel = "gpt4"):
+                 model: LLMModel = "gpt4", target_lang: LanguageCode = "ja"):
         self.websocket = websocket
         self.silence_threshold_ms = silence_threshold_ms
         self.model = model  # "gpt4" or "gemini"
+        self.target_lang = target_lang
         self.transcript_history: list[str] = []
         self.pending_summary_task: Optional[asyncio.Task] = None
         self.last_summary_hash = ""
@@ -309,8 +345,8 @@ class SummaryGenerator:
             stream = await openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"以下の発話を要約してください:\n\n{all_text}"},
+                    {"role": "system", "content": build_summary_prompt(self.target_lang)},
+                    {"role": "user", "content": f"Summarize the following utterances:\n\n{all_text}"},
                 ],
                 temperature=0.3,
                 max_tokens=200,
@@ -375,8 +411,8 @@ class SummaryGenerator:
                 stream = await lmstudio_client.chat.completions.create(
                     model=LMSTUDIO_MODEL,
                     messages=[
-                        {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"以下の発話を要約してください:\n\n{all_text}"},
+                        {"role": "system", "content": build_summary_prompt(self.target_lang)},
+                        {"role": "user", "content": f"Summarize the following utterances:\n\n{all_text}"},
                     ],
                     temperature=0.3,
                     max_tokens=200,
@@ -433,7 +469,8 @@ class SummaryGenerator:
         print(f"[Summary-Gemini] Generating summary for {len(self.transcript_history)} utterances")
 
         try:
-            full_prompt = f"{SUMMARY_SYSTEM_PROMPT}\n\n以下の発話を要約してください:\n\n{all_text}"
+            summary_prompt = build_summary_prompt(self.target_lang)
+            full_prompt = f"{summary_prompt}\n\nSummarize the following utterances:\n\n{all_text}"
 
             response = await asyncio.to_thread(
                 lambda: gemini_model.generate_content(
@@ -471,13 +508,16 @@ class IntentEstimator:
 
     def __init__(self, websocket: WebSocket, debounce_ms: int = 300,
                  is_final_only: bool = False, min_words: int = 5,
-                 model: LLMModel = "gpt4", experimental: bool = False):
+                 model: LLMModel = "gpt4", experimental: bool = False,
+                 source_lang: LanguageCode = "en", target_lang: LanguageCode = "ja"):
         self.websocket = websocket
         self.debounce_ms = debounce_ms
         self.is_final_only = is_final_only  # If True, only process is_final=True
         self.min_words = min_words  # Minimum word count for partial processing
         self.model = model  # "gpt4", "gpt5", "gemini"
         self.experimental = experimental  # Experimental mode (speculative translation)
+        self.source_lang = source_lang
+        self.target_lang = target_lang
         self.last_text = ""
         self.last_call_time = 0
         self.pending_task: Optional[asyncio.Task] = None
@@ -558,13 +598,13 @@ class IntentEstimator:
 
         # Use experimental prompt if in experimental mode
         if self.experimental:
-            system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
+            system_prompt = build_experimental_prompt(self.source_lang, self.target_lang)
             mode = "EXPERIMENTAL"
         elif is_final:
-            system_prompt = INTENT_SYSTEM_PROMPT_QUALITY
+            system_prompt = build_quality_prompt(self.source_lang, self.target_lang)
             mode = "QUALITY"
         else:
-            system_prompt = INTENT_SYSTEM_PROMPT_SPEED
+            system_prompt = build_speed_prompt(self.source_lang, self.target_lang)
             mode = "SPEED"
         print(f"[GPT-4] Start streaming [{mode}] for: {text[:30]}...", flush=True)
 
@@ -637,7 +677,7 @@ class IntentEstimator:
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
-        system_prompt = INTENT_SYSTEM_PROMPT_QUALITY if is_final else INTENT_SYSTEM_PROMPT_SPEED
+        system_prompt = build_quality_prompt(self.source_lang, self.target_lang) if is_final else build_speed_prompt(self.source_lang, self.target_lang)
         mode = "QUALITY" if is_final else "SPEED"
         print(f"[GPT-5] Start streaming [{mode}] for: {text[:30]}...", flush=True)
 
@@ -678,7 +718,7 @@ class IntentEstimator:
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
-        system_prompt = INTENT_SYSTEM_PROMPT_QUALITY if is_final else INTENT_SYSTEM_PROMPT_SPEED
+        system_prompt = build_quality_prompt(self.source_lang, self.target_lang) if is_final else build_speed_prompt(self.source_lang, self.target_lang)
         mode = "QUALITY" if is_final else "SPEED"
         print(f"[Gemini] Start [{mode}] for: {text[:30]}...", flush=True)
 
@@ -716,13 +756,13 @@ class IntentEstimator:
 
         # Use experimental prompt if in experimental mode
         if self.experimental:
-            system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
+            system_prompt = build_experimental_prompt(self.source_lang, self.target_lang)
             mode = "EXPERIMENTAL"
         elif is_final:
-            system_prompt = INTENT_SYSTEM_PROMPT_QUALITY
+            system_prompt = build_quality_prompt(self.source_lang, self.target_lang)
             mode = "QUALITY"
         else:
-            system_prompt = INTENT_SYSTEM_PROMPT_SPEED
+            system_prompt = build_speed_prompt(self.source_lang, self.target_lang)
             mode = "SPEED"
         print(f"[Gemma] Start streaming [{mode}] for: {text[:30]}...", flush=True)
 
@@ -804,13 +844,13 @@ class IntentEstimator:
 
             # Use experimental prompt if in experimental mode
             if self.experimental:
-                system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
+                system_prompt = build_experimental_prompt(self.source_lang, self.target_lang)
                 mode = "EXPERIMENTAL"
             elif is_final:
-                system_prompt = INTENT_SYSTEM_PROMPT_QUALITY
+                system_prompt = build_quality_prompt(self.source_lang, self.target_lang)
                 mode = "QUALITY"
             else:
-                system_prompt = INTENT_SYSTEM_PROMPT_SPEED
+                system_prompt = build_speed_prompt(self.source_lang, self.target_lang)
                 mode = "SPEED"
             print(f"[LMStudio] Start streaming [{mode}] for: {text[:30]}...", flush=True)
 
@@ -889,13 +929,13 @@ class IntentEstimator:
 
         # Use experimental prompt if in experimental mode
         if self.experimental:
-            system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
+            system_prompt = build_experimental_prompt(self.source_lang, self.target_lang)
             mode = "EXPERIMENTAL"
         elif is_final:
-            system_prompt = INTENT_SYSTEM_PROMPT_QUALITY
+            system_prompt = build_quality_prompt(self.source_lang, self.target_lang)
             mode = "QUALITY"
         else:
-            system_prompt = INTENT_SYSTEM_PROMPT_SPEED
+            system_prompt = build_speed_prompt(self.source_lang, self.target_lang)
             mode = "SPEED"
         print(f"[Groq/{groq_model_name}] Start streaming [{mode}] for: {text[:30]}...", flush=True)
 
@@ -1020,12 +1060,20 @@ class IntentEstimator:
 class TranscriptionManager:
     """Manages streaming connection with Deepgram"""
 
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, source_lang: LanguageCode = "en",
+                 target_lang: LanguageCode = "ja"):
         self.websocket = websocket
+        self.source_lang = source_lang
+        self.target_lang = target_lang
         self.dg_connection = None
         self.is_running = False
-        self.intent_estimator = IntentEstimator(websocket, min_words=5)
-        self.summary_generator = SummaryGenerator(websocket)
+        self.intent_estimator = IntentEstimator(
+            websocket, min_words=5,
+            source_lang=source_lang, target_lang=target_lang
+        )
+        self.summary_generator = SummaryGenerator(
+            websocket, target_lang=target_lang
+        )
         self.keyword_predictor = KeywordPredictor(websocket)
 
     def set_mode(self, is_final_only: bool):
@@ -1059,6 +1107,24 @@ class TranscriptionManager:
         mode_name = "EXPERIMENTAL (speculative)" if enabled else "NORMAL"
         print(f"[Mode] Switched to {mode_name}", flush=True)
 
+    async def set_languages(self, source_lang: LanguageCode, target_lang: LanguageCode) -> bool:
+        """Set source/target languages. Restarts Deepgram if source language changed.
+        Returns True if Deepgram was restarted."""
+        old_source = self.source_lang
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+        self.intent_estimator.source_lang = source_lang
+        self.intent_estimator.target_lang = target_lang
+        self.summary_generator.target_lang = target_lang
+        print(f"[Lang] Set {LANG_NAMES[source_lang]} → {LANG_NAMES[target_lang]}", flush=True)
+
+        # Restart Deepgram if source language changed
+        if old_source != source_lang and self.is_running:
+            print(f"[Lang] Source language changed, restarting Deepgram...", flush=True)
+            await self.close()
+            return await self.start()
+        return True
+
     async def start(self):
         if not DEEPGRAM_API_KEY:
             await self.websocket.send_json({
@@ -1077,9 +1143,11 @@ class TranscriptionManager:
             self.dg_connection.on(LiveTranscriptionEvents.Error, self._on_error)
             self.dg_connection.on(LiveTranscriptionEvents.Close, self._on_close)
 
+            dg_lang = DEEPGRAM_LANG_MAP.get(self.source_lang, "en-US")
+            print(f"[Deepgram] Starting with language: {dg_lang}", flush=True)
             options = LiveOptions(
                 model="nova-2",
-                language="en-US",
+                language=dg_lang,
                 encoding="linear16",
                 sample_rate=16000,
                 channels=1,
@@ -1267,6 +1335,18 @@ async def websocket_audio(websocket: WebSocket):
                         "type": "experimental_changed",
                         "enabled": enabled
                     })
+                elif msg_type == "set_languages":
+                    # Language switch: {"type": "set_languages", "source": "en", "target": "ja"}
+                    source = message.get("source", "en")
+                    target = message.get("target", "ja")
+                    valid_langs = ("en", "ja", "es", "zh")
+                    if source in valid_langs and target in valid_langs and source != target:
+                        await manager.set_languages(source, target)
+                        await websocket.send_json({
+                            "type": "languages_changed",
+                            "source": source,
+                            "target": target,
+                        })
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")
