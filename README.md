@@ -41,19 +41,22 @@ Changing the source language will automatically restart the speech recognition e
 ## Tech Stack
 
 ### Backend
-- **Python 3.10+** with FastAPI and WebSockets
-- **Deepgram SDK** -- Streaming speech-to-text with partial results
-- **OpenAI API** (GPT-4o-mini) -- Primary LLM for intent estimation and translation
-- **Google Gemini** (optional) -- Alternative LLM backend
-- **Groq API** (optional) -- Ultra-fast inference with Llama models
-- **Ollama / LM Studio** (optional) -- Local LLM support
+- **Python 3.10+**
+- **FastAPI 0.115** + **WebSockets 14.1** -- Async API server
+- **Deepgram SDK 3.10** -- Streaming speech-to-text with partial results
+- **OpenAI SDK 1.58** (GPT-4o-mini) -- Primary LLM for intent estimation and translation
+- **Google Generative AI SDK 0.8+** (Gemini 2.5 Flash) -- Optional alternative LLM
+- **Groq API** (via OpenAI SDK) -- Optional ultra-fast inference with Llama models
+- **Ollama / LM Studio** (via OpenAI-compatible API) -- Optional local LLM support
+- **Uvicorn 0.34** -- ASGI server
 
 ### Frontend
-- **React 19** with TypeScript
-- **Vite** -- Build tool and dev server
-- **Tailwind CSS** -- Styling
-- **Lucide React** -- Icons
-- **Web Speech API** -- TTS for translated text
+- **React 19.2** with **TypeScript 5.9**
+- **Vite 5.4** -- Build tool and dev server
+- **Tailwind CSS 3.4** -- Styling
+- **Lucide React 0.562** -- Icons
+- **React Router DOM 6.30** -- Routing
+- **Web Speech API** -- Browser-native TTS for translated text
 
 ## Setup
 
