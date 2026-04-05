@@ -17,7 +17,7 @@ export function AudioRecorder({
   const [isRecording, setIsRecording] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // マイク選択
+  // Microphone selection
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
@@ -26,17 +26,17 @@ export function AudioRecorder({
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
-  // 利用可能なマイク一覧を取得
+  // Get available microphone list
   const refreshDevices = useCallback(async () => {
     try {
-      // 権限を取得するために一度getUserMediaを呼ぶ（デバイスラベル取得に必要）
+      // Call getUserMedia once to get permission (required for device labels)
       const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       tempStream.getTracks().forEach(t => t.stop());
 
       const devices = await navigator.mediaDevices.enumerateDevices();
       const mics = devices.filter(d => d.kind === 'audioinput');
       setAudioDevices(mics);
-      // 未選択なら最初のデバイスを選択
+      // Select first device if none selected
       if (!selectedDeviceId && mics.length > 0) {
         setSelectedDeviceId(mics[0].deviceId);
       }
@@ -45,12 +45,12 @@ export function AudioRecorder({
     }
   }, [selectedDeviceId]);
 
-  // 初回マウント時にデバイス一覧を取得
+  // Get device list on initial mount
   useEffect(() => {
     refreshDevices();
   }, []);
 
-  // デバイス変更を監視（Bluetooth接続/切断時など）
+  // Watch for device changes (e.g. Bluetooth connect/disconnect)
   useEffect(() => {
     const handler = () => refreshDevices();
     navigator.mediaDevices.addEventListener('devicechange', handler);
@@ -62,7 +62,7 @@ export function AudioRecorder({
     setIsInitializing(true);
 
     try {
-      // マイクアクセスを要求（選択されたデバイスを指定）
+      // Request microphone access (specify selected device)
       const audioConstraints: MediaTrackConstraints = {
         channelCount: 1,
         sampleRate: 16000,
@@ -78,23 +78,23 @@ export function AudioRecorder({
 
       mediaStreamRef.current = stream;
 
-      // WebSocket接続を開始
+      // Start WebSocket connection
       onStart();
 
-      // AudioContext設定
+      // AudioContext setup
       const audioContext = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
       sourceRef.current = source;
 
-      // ScriptProcessorで音声データを処理
+      // Process audio data with ScriptProcessor
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
       processor.onaudioprocess = (event) => {
         const inputData = event.inputBuffer.getChannelData(0);
-        // Float32 to Int16変換
+        // Float32 to Int16 conversion
         const int16Data = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
@@ -112,7 +112,7 @@ export function AudioRecorder({
       setError(
         err instanceof Error
           ? err.message
-          : 'マイクへのアクセスに失敗しました'
+          : 'Failed to access microphone'
       );
     } finally {
       setIsInitializing(false);
@@ -120,25 +120,25 @@ export function AudioRecorder({
   }, [onStart, onAudioData, selectedDeviceId]);
 
   const stopRecording = useCallback(() => {
-    // プロセッサーを停止
+    // Stop processor
     if (processorRef.current) {
       processorRef.current.disconnect();
       processorRef.current = null;
     }
 
-    // ソースを停止
+    // Stop source
     if (sourceRef.current) {
       sourceRef.current.disconnect();
       sourceRef.current = null;
     }
 
-    // AudioContextを閉じる
+    // Close AudioContext
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
 
-    // メディアストリームを停止
+    // Stop media stream
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop());
       mediaStreamRef.current = null;
@@ -148,7 +148,7 @@ export function AudioRecorder({
     onStop();
   }, [onStop]);
 
-  // コンポーネントアンマウント時にクリーンアップ
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (isRecording) {
@@ -167,10 +167,10 @@ export function AudioRecorder({
 
   return (
     <div className="flex flex-col items-center gap-4">
-      {/* マイク選択（複数デバイスがある場合のみ表示） */}
+      {/* Microphone selection (shown only when multiple devices available) */}
       {audioDevices.length > 1 && (
         <div className="flex items-center gap-2 w-full max-w-sm">
-          <label className="text-xs text-gray-500 whitespace-nowrap">マイク:</label>
+          <label className="text-xs text-gray-500 whitespace-nowrap">Mic:</label>
           <select
             value={selectedDeviceId}
             onChange={(e) => setSelectedDeviceId(e.target.value)}
@@ -179,7 +179,7 @@ export function AudioRecorder({
           >
             {audioDevices.map((device) => (
               <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `マイク ${device.deviceId.slice(0, 8)}`}
+                {device.label || `Mic ${device.deviceId.slice(0, 8)}`}
               </option>
             ))}
           </select>
@@ -212,20 +212,20 @@ export function AudioRecorder({
       </button>
 
       <div className="text-sm text-gray-600">
-        {isInitializing && '初期化中...'}
+        {isInitializing && 'Initializing...'}
         {isRecording && !isInitializing && (
           <span className="flex items-center gap-2">
             <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-            録音中
+            Recording
           </span>
         )}
-        {!isRecording && !isInitializing && 'クリックして録音開始'}
+        {!isRecording && !isInitializing && 'Click to start recording'}
       </div>
 
       {isConnected && (
         <div className="text-xs text-green-600 flex items-center gap-1">
           <span className="w-2 h-2 bg-green-500 rounded-full" />
-          サーバー接続済み
+          Server connected
         </div>
       )}
 

@@ -1,17 +1,13 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import './index.css'
-import App from './App.tsx'
 import ExperimentalApp from './ExperimentalApp.tsx'
+
+// Previous standard App is disabled - kept for reference
+// import App from './App.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<App />} />
-        <Route path="/experimental" element={<ExperimentalApp />} />
-      </Routes>
-    </BrowserRouter>
+    <ExperimentalApp />
   </StrictMode>,
 )

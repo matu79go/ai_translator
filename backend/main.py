@@ -55,10 +55,10 @@ if GEMINI_AVAILABLE and GOOGLE_API_KEY:
 else:
     gemini_model = None
 
-# LLMモデル型
+# LLM model type
 LLMModel = Literal["gpt4", "gpt5", "gemini", "gemma", "groq", "lmstudio"]
 
-# Groqモデル設定（UIから切り替え可能）
+# Groq model settings (switchable from UI)
 GroqModel = Literal[
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
@@ -67,24 +67,24 @@ GroqModel = Literal[
 ]
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 groq_client = AsyncOpenAI(base_url=GROQ_BASE_URL, api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-groq_model_name: GroqModel = "llama-3.3-70b-versatile"  # デフォルトモデル（高速・高品質）
+groq_model_name: GroqModel = "llama-3.3-70b-versatile"  # Default model (fast & high quality)
 
-# Ollama (Gemma 3 4B) 設定
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.0.183:11434/v1")
+# Ollama (Gemma 3 4B) settings
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 gemma_client = AsyncOpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
-# Gemmaは同時リクエスト不可なのでロックで制限
+# Gemma does not support concurrent requests, so limit with lock
 gemma_lock = asyncio.Lock()
-gemma_pending_text: str | None = None  # 待機中のテキスト（最新のみ保持）
+gemma_pending_text: str | None = None  # Pending text (keep only latest)
 
-# LM Studio 0.4.0 設定（RTX 3060 6GBではVRAM不足のため並列リクエスト不可）
-LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://192.168.0.183:1234/v1")
-LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "gemma-3-4b-it")  # LM Studioでロードしたモデル名
+# LM Studio settings (no concurrent requests due to VRAM constraints)
+LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "gemma-3-4b-it")  # Model name loaded in LM Studio
 lmstudio_client = AsyncOpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lm-studio")
-lmstudio_lock = asyncio.Lock()  # 並列リクエスト防止用ロック
+lmstudio_lock = asyncio.Lock()  # Lock to prevent concurrent requests
 
-# キーワード→トピック予測マッピング（即時応答用）
+# Keyword → topic prediction mapping (for instant response)
 KEYWORD_TOPICS = {
-    # 日程・時間
+    # Schedule / Time
     "schedule": "日程調整",
     "meeting": "会議",
     "tuesday": "火曜日",
@@ -97,7 +97,7 @@ KEYWORD_TOPICS = {
     "next week": "来週",
     "afternoon": "午後",
     "morning": "午前",
-    # ビジネス
+    # Business
     "budget": "予算",
     "project": "プロジェクト",
     "deadline": "締め切り",
@@ -107,7 +107,7 @@ KEYWORD_TOPICS = {
     "proposal": "提案",
     "client": "クライアント",
     "customer": "顧客",
-    # アクション
+    # Actions
     "discuss": "議論",
     "confirm": "確認",
     "update": "更新",
@@ -116,7 +116,7 @@ KEYWORD_TOPICS = {
     "prepare": "準備",
     "finish": "完了",
     "start": "開始",
-    # 質問・依頼
+    # Questions / Requests
     "can we": "依頼",
     "could you": "依頼",
     "would you": "依頼",
@@ -126,7 +126,7 @@ KEYWORD_TOPICS = {
     "let's": "提案",
 }
 
-# バランス重視プロンプト: 最低限の分析→翻訳（partial用）
+# Speed-focused prompt: minimal analysis → translation (for partial results)
 INTENT_SYSTEM_PROMPT_SPEED = """あなたはリアルタイム同時通訳AIです。
 英語の発話をリアルタイムで日本語に翻訳します。
 
@@ -157,7 +157,7 @@ INTENT_SYSTEM_PROMPT_SPEED = """あなたはリアルタイム同時通訳AIで�
 
 注意: JSON以外の文字は出力しないでください。"""
 
-# 品質重視プロンプト: 文脈を先に分析してから翻訳（is_final用）
+# Quality-focused prompt: analyze context first, then translate (for is_final results)
 INTENT_SYSTEM_PROMPT_QUALITY = """あなたはリアルタイム対話支援AIです。
 入力される英語から、話者の「意図」と「重要な単語」を抽出し、正確な翻訳を行ってください。
 
@@ -180,7 +180,7 @@ INTENT_SYSTEM_PROMPT_QUALITY = """あなたはリアルタイム対話支援AI�
 
 注意: JSON以外の文字は出力しないでください。"""
 
-# 実験用プロンプト: 推測翻訳を先に出す（speculative_translation）
+# Experimental prompt: output speculative translation first (speculative_translation)
 INTENT_SYSTEM_PROMPT_EXPERIMENTAL = """あなたはリアルタイム同時通訳AIです。
 人間の同時通訳者のように、文が完結する前に「推測」で翻訳を開始してください。
 
@@ -227,14 +227,14 @@ SUMMARY_SYSTEM_PROMPT = """あなたは会話要約AIです。
 
 
 class KeywordPredictor:
-    """即座にキーワードからトピックを予測するクラス"""
+    """Predicts topics from keywords instantly"""
 
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
         self.last_hints: set[str] = set()
 
     async def predict(self, text: str):
-        """テキストからキーワードを抽出して即座にヒントを送信"""
+        """Extract keywords from text and send hints immediately"""
         text_lower = text.lower()
         hints = set()
 
@@ -242,17 +242,17 @@ class KeywordPredictor:
             if keyword in text_lower:
                 hints.add(topic)
 
-        # 新しいヒントがある場合のみ送信
+        # Only send if there are new hints
         if hints and hints != self.last_hints:
             self.last_hints = hints
             await self.websocket.send_json({
                 "type": "hints",
-                "hints": list(hints)[:5],  # 最大5つ
+                "hints": list(hints)[:5],  # Max 5
             })
 
 
 class SummaryGenerator:
-    """会話サマリーを生成するクラス（ストリーミング対応、マルチモデル）"""
+    """Generates conversation summaries (streaming, multi-model)"""
 
     def __init__(self, websocket: WebSocket, silence_threshold_ms: int = 1500,
                  model: LLMModel = "gpt4"):
@@ -264,7 +264,7 @@ class SummaryGenerator:
         self.last_summary_hash = ""
 
     def add_transcript(self, text: str):
-        """確定したトランスクリプトを追加"""
+        """Add finalized transcript"""
         self.transcript_history.append(text)
 
         if self.pending_summary_task and not self.pending_summary_task.done():
@@ -275,24 +275,24 @@ class SummaryGenerator:
         )
 
     async def _delayed_summary(self):
-        """沈黙後にサマリーを生成"""
+        """Generate summary after silence"""
         await asyncio.sleep(self.silence_threshold_ms / 1000)
 
         if len(self.transcript_history) >= 2:
             if self.model == "gemini":
                 await self._generate_summary_gemini()
             elif self.model == "gemma":
-                # Gemma（ローカルLLM）は同時リクエスト不可のため、サマリーはGPT-4を使用
+                # Gemma (local LLM) does not support concurrent requests, use GPT-4 for summary
                 print(f"[Summary] Gemma selected, but using GPT-4 for summary (concurrent requests not supported)", flush=True)
                 await self._generate_summary_streaming(use_gpt4_fallback=True)
             elif self.model == "lmstudio":
-                # LM Studio 0.4.0は並列リクエスト対応
+                # LM Studio supports parallel requests
                 await self._generate_summary_lmstudio()
             else:
                 await self._generate_summary_streaming()
 
     async def _generate_summary_streaming(self, use_gpt4_fallback: bool = False):
-        """ストリーミングでサマリーを生成"""
+        """Generate summary via streaming"""
         if not openai_client:
             return
 
@@ -322,9 +322,9 @@ class SummaryGenerator:
                 if chunk.choices[0].delta.content:
                     full_response += chunk.choices[0].delta.content
 
-                    # JSONが完成したかチェック
+                    # Check if JSON is complete
                     try:
-                        # 部分的なJSONでも解析を試みる
+                        # Try parsing even partial JSON
                         if "{" in full_response and "}" in full_response:
                             json_match = re.search(r'\{[^{}]*\}', full_response)
                             if json_match:
@@ -339,7 +339,7 @@ class SummaryGenerator:
                     except json.JSONDecodeError:
                         pass
 
-            # 最終結果を送信
+            # Send final result
             try:
                 final_data = json.loads(full_response)
                 await self.websocket.send_json({
@@ -355,8 +355,8 @@ class SummaryGenerator:
             print(f"[Summary] Error: {type(e).__name__}: {e}")
 
     async def _generate_summary_lmstudio(self):
-        """LM Studio 0.4.0でサマリーを生成（ロックで直列化）"""
-        # ロックが取れない場合はスキップ
+        """Generate summary via LM Studio (serialized with lock)"""
+        # Skip if lock is busy
         if lmstudio_lock.locked():
             print(f"[Summary LMStudio] Skipped (lock busy)")
             return
@@ -388,7 +388,7 @@ class SummaryGenerator:
                     if chunk.choices[0].delta.content:
                         full_response += chunk.choices[0].delta.content
 
-                        # JSONが完成したかチェック
+                        # Check if JSON is complete
                         try:
                             if "{" in full_response and "}" in full_response:
                                 json_match = re.search(r'\{[^{}]*\}', full_response)
@@ -404,7 +404,7 @@ class SummaryGenerator:
                         except json.JSONDecodeError:
                             pass
 
-                # 最終結果を送信
+                # Send final result
                 try:
                     final_data = json.loads(full_response)
                     await self.websocket.send_json({
@@ -420,7 +420,7 @@ class SummaryGenerator:
                 print(f"[Summary LMStudio] Error: {type(e).__name__}: {e}")
 
     async def _generate_summary_gemini(self):
-        """Geminiでサマリーを生成"""
+        """Generate summary via Gemini"""
         if not gemini_model:
             return
 
@@ -448,7 +448,7 @@ class SummaryGenerator:
             full_response = response.text if response.text else ""
             print(f"[Summary-Gemini] Response received", flush=True)
 
-            # JSONを抽出
+            # Extract JSON
             try:
                 json_match = re.search(r'\{[\s\S]*\}', full_response)
                 if json_match:
@@ -467,30 +467,30 @@ class SummaryGenerator:
 
 
 class IntentEstimator:
-    """意図推定を行うクラス（ストリーミング対応、マルチモデル）"""
+    """Intent estimation class (streaming, multi-model)"""
 
     def __init__(self, websocket: WebSocket, debounce_ms: int = 300,
                  is_final_only: bool = False, min_words: int = 5,
                  model: LLMModel = "gpt4", experimental: bool = False):
         self.websocket = websocket
         self.debounce_ms = debounce_ms
-        self.is_final_only = is_final_only  # Trueの場合、is_final=Trueのみ処理
-        self.min_words = min_words  # partial時の最小単語数
+        self.is_final_only = is_final_only  # If True, only process is_final=True
+        self.min_words = min_words  # Minimum word count for partial processing
         self.model = model  # "gpt4", "gpt5", "gemini"
-        self.experimental = experimental  # 実験モード（推測翻訳）
+        self.experimental = experimental  # Experimental mode (speculative translation)
         self.last_text = ""
         self.last_call_time = 0
         self.pending_task: Optional[asyncio.Task] = None
         self.context_history: list[str] = []
 
     async def estimate(self, text: str, is_final: bool):
-        """テキストから意図を推定（ストリーミング）"""
-        # モデルに応じてクライアントをチェック
+        """Estimate intent from text (streaming)"""
+        # Check client based on model
         if self.model in ("gpt4", "gpt5") and not openai_client:
             return
         if self.model == "gemini" and not gemini_model:
             return
-        # gemmaはgemma_clientを使用（常に利用可能）
+        # gemma uses gemma_client (always available)
         if not text.strip():
             return
 
@@ -508,13 +508,13 @@ class IntentEstimator:
             await self._call_llm_streaming(text, is_final)
             return
 
-        # partial（進行中）の処理
-        # is_final_onlyモードの場合、partialはスキップ
+        # Process partial (in-progress)
+        # In is_final_only mode, skip partials
         if self.is_final_only:
             print(f"[LLM] Skipped partial (is_final_only mode): {text[:30]}...", flush=True)
             return
 
-        # 短いテキストはスキップ（断片的な翻訳を防ぐ）
+        # Skip short text (prevent fragmented translations)
         if word_count < self.min_words:
             print(f"[LLM] Skipped partial ({word_count} words < {self.min_words}): {text[:30]}...", flush=True)
             return
@@ -537,7 +537,7 @@ class IntentEstimator:
         await self._call_llm_streaming(text, is_final)
 
     async def _call_llm_streaming(self, text: str, is_final: bool):
-        """ストリーミングでLLMを呼び出して意図を推定"""
+        """Call LLM via streaming to estimate intent"""
         if self.model == "gemini":
             await self._call_gemini(text, is_final)
         elif self.model == "gemma":
@@ -552,11 +552,11 @@ class IntentEstimator:
             await self._call_gpt4(text, is_final)
 
     async def _call_gpt4(self, text: str, is_final: bool):
-        """GPT-4o-mini APIでストリーミング"""
+        """GPT-4o-mini API streaming"""
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
-        # 実験モードの場合は専用プロンプト
+        # Use experimental prompt if in experimental mode
         if self.experimental:
             system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
             mode = "EXPERIMENTAL"
@@ -570,9 +570,9 @@ class IntentEstimator:
 
         context = ""
         if self.context_history:
-            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+            context = "Previous utterances:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
 
-        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+        user_prompt = f"{context}Current utterance ({'final' if is_final else 'in progress'}):\n{text}"
 
         try:
             stream = await openai_client.chat.completions.create(
@@ -589,7 +589,7 @@ class IntentEstimator:
             full_response = ""
             sent_intent_partial = False
             sent_translation_partial = False
-            sent_speculative = False  # 実験モード用
+            sent_speculative = False  # For experimental mode
             first_chunk_time = None
 
             async for chunk in stream:
@@ -600,7 +600,7 @@ class IntentEstimator:
 
                     full_response += chunk.choices[0].delta.content
 
-                    # 実験モード: speculative_translation を先に送信
+                    # Experimental mode: send speculative_translation early
                     if self.experimental and not sent_speculative and '"speculative_translation"' in full_response:
                         try:
                             match = re.search(r'"speculative_translation"\s*:\s*"([^"]+)"', full_response)
@@ -633,7 +633,7 @@ class IntentEstimator:
             print(f"[GPT-4] Error: {type(e).__name__}: {e}")
 
     async def _call_gpt5(self, text: str, is_final: bool):
-        """GPT-5 APIでストリーミング（新しいresponses API）"""
+        """GPT-5 API streaming (new responses API)"""
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
@@ -643,9 +643,9 @@ class IntentEstimator:
 
         context = ""
         if self.context_history:
-            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+            context = "Previous utterances:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
 
-        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+        user_prompt = f"{context}Current utterance ({'final' if is_final else 'in progress'}):\n{text}"
 
         try:
             # GPT-5 uses responses.stream API (sync, run in thread)
@@ -674,7 +674,7 @@ class IntentEstimator:
             print(f"[GPT-5] Error: {type(e).__name__}: {e}")
 
     async def _call_gemini(self, text: str, is_final: bool):
-        """Gemini APIで呼び出し"""
+        """Gemini API call"""
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
@@ -684,13 +684,13 @@ class IntentEstimator:
 
         context = ""
         if self.context_history:
-            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+            context = "Previous utterances:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
 
-        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+        user_prompt = f"{context}Current utterance ({'final' if is_final else 'in progress'}):\n{text}"
         full_prompt = f"{system_prompt}\n\n{user_prompt}"
 
         try:
-            # Gemini API (非ストリーミング、asyncioで実行)
+            # Gemini API (non-streaming, run via asyncio)
             response = await asyncio.to_thread(
                 lambda: gemini_model.generate_content(
                     full_prompt,
@@ -710,11 +710,11 @@ class IntentEstimator:
             print(f"[Gemini] Error: {type(e).__name__}: {e}")
 
     async def _call_gemma(self, text: str, is_final: bool):
-        """Gemma 3 (Ollama) APIでストリーミング - 並列リクエスト対応"""
+        """Gemma 3 (Ollama) API streaming"""
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
-        # 実験モードの場合は専用プロンプト
+        # Use experimental prompt if in experimental mode
         if self.experimental:
             system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
             mode = "EXPERIMENTAL"
@@ -728,9 +728,9 @@ class IntentEstimator:
 
         context = ""
         if self.context_history:
-            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+            context = "Previous utterances:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
 
-        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+        user_prompt = f"{context}Current utterance ({'final' if is_final else 'in progress'}):\n{text}"
 
         try:
             stream = await gemma_client.chat.completions.create(
@@ -758,7 +758,7 @@ class IntentEstimator:
 
                     full_response += chunk.choices[0].delta.content
 
-                    # 実験モード: speculative_translation を先に送信
+                    # Experimental mode: send speculative_translation early
                     if self.experimental and not sent_speculative and '"speculative_translation"' in full_response:
                         try:
                             match = re.search(r'"speculative_translation"\s*:\s*"([^"]+)"', full_response)
@@ -791,9 +791,9 @@ class IntentEstimator:
             print(f"[Gemma] Error: {type(e).__name__}: {e}")
 
     async def _call_lmstudio(self, text: str, is_final: bool):
-        """LM Studio 0.4.0 APIでストリーミング（ロックで直列化）"""
-        # is_final以外でロックが取れない場合はスキップ
-        # is_finalの場合はロックを待つ（確実に処理する）
+        """LM Studio API streaming (serialized with lock)"""
+        # Skip if lock is busy for non-final requests
+        # For is_final, wait for lock (must process)
         if not is_final and lmstudio_lock.locked():
             print(f"[LMStudio] Skipped (lock busy, partial): {text[:30]}...", flush=True)
             return
@@ -802,7 +802,7 @@ class IntentEstimator:
             self.last_call_time = time.time() * 1000
             start_time = time.time()
 
-            # 実験モードの場合は専用プロンプト
+            # Use experimental prompt if in experimental mode
             if self.experimental:
                 system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
                 mode = "EXPERIMENTAL"
@@ -816,9 +816,9 @@ class IntentEstimator:
 
             context = ""
             if self.context_history:
-                context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+                context = "Previous utterances:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
 
-            user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+            user_prompt = f"{context}Current utterance ({'final' if is_final else 'in progress'}):\n{text}"
 
             try:
                 stream = await lmstudio_client.chat.completions.create(
@@ -846,7 +846,7 @@ class IntentEstimator:
 
                         full_response += chunk.choices[0].delta.content
 
-                        # 実験モード: speculative_translation を先に送信
+                        # Experimental mode: send speculative_translation early
                         if self.experimental and not sent_speculative and '"speculative_translation"' in full_response:
                             try:
                                 match = re.search(r'"speculative_translation"\s*:\s*"([^"]+)"', full_response)
@@ -879,7 +879,7 @@ class IntentEstimator:
                 print(f"[LMStudio] Error: {type(e).__name__}: {e}")
 
     async def _call_groq(self, text: str, is_final: bool):
-        """Groq APIでストリーミング（超高速）"""
+        """Groq API streaming (ultra-fast)"""
         if not groq_client:
             print("[Groq] Client not configured (missing GROQ_API_KEY)", flush=True)
             return
@@ -887,7 +887,7 @@ class IntentEstimator:
         self.last_call_time = time.time() * 1000
         start_time = time.time()
 
-        # 実験モードの場合は専用プロンプト
+        # Use experimental prompt if in experimental mode
         if self.experimental:
             system_prompt = INTENT_SYSTEM_PROMPT_EXPERIMENTAL
             mode = "EXPERIMENTAL"
@@ -901,9 +901,9 @@ class IntentEstimator:
 
         context = ""
         if self.context_history:
-            context = "過去の発話:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
+            context = "Previous utterances:\n" + "\n".join(self.context_history[-3:]) + "\n\n"
 
-        user_prompt = f"{context}現在の発話（{'確定' if is_final else '進行中'}）:\n{text}"
+        user_prompt = f"{context}Current utterance ({'final' if is_final else 'in progress'}):\n{text}"
 
         try:
             stream = await groq_client.chat.completions.create(
@@ -931,7 +931,7 @@ class IntentEstimator:
 
                     full_response += chunk.choices[0].delta.content
 
-                    # 実験モード: speculative_translation を先に送信
+                    # Experimental mode: send speculative_translation early
                     if self.experimental and not sent_speculative and '"speculative_translation"' in full_response:
                         try:
                             match = re.search(r'"speculative_translation"\s*:\s*"([^"]+)"', full_response)
@@ -965,7 +965,7 @@ class IntentEstimator:
 
     async def _process_streaming_chunk(self, full_response: str, text: str,
                                         sent_intent: bool, sent_translation: bool):
-        """ストリーミングチャンクを処理して部分結果を送信"""
+        """Process streaming chunk and send partial results"""
         if not sent_intent and '"intent_label"' in full_response:
             try:
                 match = re.search(r'"intent_label"\s*:\s*"([^"]+)"', full_response)
@@ -996,12 +996,12 @@ class IntentEstimator:
 
     async def _finalize_response(self, full_response: str, text: str,
                                   is_final: bool, start_time: float, provider: str):
-        """最終レスポンスを処理して送信"""
+        """Process and send final response"""
         end_time = time.time()
         print(f"[{provider}] Complete in {(end_time - start_time)*1000:.0f}ms", flush=True)
 
         try:
-            # JSONを抽出（前後の余分な文字を除去）
+            # Extract JSON (strip extra characters)
             json_match = re.search(r'\{[\s\S]*\}', full_response)
             if json_match:
                 intent_data = json.loads(json_match.group())
@@ -1018,7 +1018,7 @@ class IntentEstimator:
 
 
 class TranscriptionManager:
-    """Deepgramとのストリーミング接続を管理"""
+    """Manages streaming connection with Deepgram"""
 
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
@@ -1029,24 +1029,24 @@ class TranscriptionManager:
         self.keyword_predictor = KeywordPredictor(websocket)
 
     def set_mode(self, is_final_only: bool):
-        """翻訳モードを切り替え"""
+        """Switch translation mode"""
         self.intent_estimator.is_final_only = is_final_only
         mode_name = "FINAL_ONLY (QUALITY)" if is_final_only else "HYBRID (SPEED+QUALITY)"
         print(f"[Mode] Switched to {mode_name}", flush=True)
 
     def set_min_words(self, min_words: int):
-        """partial処理の最小単語数を設定"""
+        """Set minimum word count for partial processing"""
         self.intent_estimator.min_words = min_words
         print(f"[Config] min_words set to {min_words}", flush=True)
 
     def set_model(self, model: LLMModel) -> bool:
-        """LLMモデルを切り替え（IntentEstimatorとSummaryGenerator両方）
-        Returns: ローカルLLMの場合True（FINAL_ONLYモード強制を通知するため）"""
+        """Switch LLM model (both IntentEstimator and SummaryGenerator).
+        Returns: True for local LLMs (to notify forced FINAL_ONLY mode)"""
         self.intent_estimator.model = model
         self.summary_generator.model = model
         print(f"[Model] Switched to {model.upper()} (intent + summary)", flush=True)
 
-        # LM Studio は FINAL_ONLY モードを強制（RTX 3060 6GBではVRAM不足のため）
+        # LM Studio forces FINAL_ONLY mode (to prevent VRAM overload)
         if model == "lmstudio":
             self.intent_estimator.is_final_only = True
             print(f"[Model] LM Studio selected: forcing FINAL_ONLY mode (to prevent crashes)", flush=True)
@@ -1054,7 +1054,7 @@ class TranscriptionManager:
         return False
 
     def set_experimental(self, enabled: bool):
-        """実験モード（推測翻訳）を切り替え"""
+        """Switch experimental mode (speculative translation)"""
         self.intent_estimator.experimental = enabled
         mode_name = "EXPERIMENTAL (speculative)" if enabled else "NORMAL"
         print(f"[Mode] Switched to {mode_name}", flush=True)
@@ -1092,7 +1092,7 @@ class TranscriptionManager:
                 self.is_running = True
                 await self.websocket.send_json({
                     "type": "status",
-                    "message": "接続完了 - 高速モード有効"
+                    "message": "Connected - fast mode enabled"
                 })
                 return True
             else:
@@ -1131,13 +1131,13 @@ class TranscriptionManager:
                         "confidence": transcript_data.confidence,
                     })
 
-                    # 即座にキーワードヒントを送信（軽量なので同期）
+                    # Send keyword hints immediately (lightweight, synchronous)
                     await self.keyword_predictor.predict(transcript)
 
-                    # 意図推定を非ブロッキングで実行（Deepgramのkeepaliveをブロックしない）
+                    # Run intent estimation non-blocking (don't block Deepgram keepalive)
                     asyncio.create_task(self.intent_estimator.estimate(transcript, is_final))
 
-                    # 確定したトランスクリプトをサマリー用に追加
+                    # Add finalized transcript for summary generation
                     if is_final:
                         self.summary_generator.add_transcript(transcript)
 
@@ -1169,7 +1169,7 @@ class TranscriptionManager:
             await self.dg_connection.finish()
 
 
-# 静的ファイルのパス
+# Path to static files
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 
@@ -1208,7 +1208,7 @@ async def websocket_audio(websocket: WebSocket):
                 if msg_type == "stop":
                     break
                 elif msg_type == "set_mode":
-                    # モード切り替え: {"type": "set_mode", "is_final_only": true/false}
+                    # Mode switch: {"type": "set_mode", "is_final_only": true/false}
                     is_final_only = message.get("is_final_only", False)
                     manager.set_mode(is_final_only)
                     await websocket.send_json({
@@ -1217,7 +1217,7 @@ async def websocket_audio(websocket: WebSocket):
                         "mode_name": "FINAL_ONLY" if is_final_only else "HYBRID"
                     })
                 elif msg_type == "set_min_words":
-                    # 最小単語数設定: {"type": "set_min_words", "min_words": 5}
+                    # Min word count: {"type": "set_min_words", "min_words": 5}
                     min_words = message.get("min_words", 5)
                     manager.set_min_words(min_words)
                     await websocket.send_json({
@@ -1225,7 +1225,7 @@ async def websocket_audio(websocket: WebSocket):
                         "min_words": min_words
                     })
                 elif msg_type == "set_model":
-                    # LLMモデル切り替え: {"type": "set_model", "model": "gpt4" | "gpt5" | "gemini" | "gemma" | "groq" | "lmstudio"}
+                    # LLM model switch: {"type": "set_model", "model": "gpt4" | "gpt5" | "gemini" | "gemma" | "groq" | "lmstudio"}
                     model = message.get("model", "gpt4")
                     if model in ("gpt4", "gpt5", "gemini", "gemma", "groq", "lmstudio"):
                         forced_final_only = manager.set_model(model)
@@ -1235,16 +1235,16 @@ async def websocket_audio(websocket: WebSocket):
                             "forced_final_only": forced_final_only,
                             "groq_model": groq_model_name if model == "groq" else None
                         })
-                        # Gemmaの場合、モード変更も通知
+                        # For local LLMs, also notify mode change
                         if forced_final_only:
                             await websocket.send_json({
                                 "type": "mode_changed",
                                 "is_final_only": True,
                                 "mode_name": "FINAL_ONLY",
-                                "reason": "gemma"  # Gemmaによる強制
+                                "reason": "gemma"  # Forced by local LLM
                             })
                 elif msg_type == "set_groq_model":
-                    # Groqモデル切り替え
+                    # Groq model switch
                     new_groq_model = message.get("groq_model", "llama-3.3-70b-versatile")
                     valid_groq_models = (
                         "llama-3.1-8b-instant",
@@ -1260,7 +1260,7 @@ async def websocket_audio(websocket: WebSocket):
                             "groq_model": groq_model_name
                         })
                 elif msg_type == "set_experimental":
-                    # 実験モード切り替え: {"type": "set_experimental", "enabled": true/false}
+                    # Experimental mode: {"type": "set_experimental", "enabled": true/false}
                     enabled = message.get("enabled", False)
                     manager.set_experimental(enabled)
                     await websocket.send_json({
@@ -1278,19 +1278,19 @@ async def websocket_audio(websocket: WebSocket):
         print("WebSocket connection closed")
 
 
-# 静的ファイル配信（フロントエンドビルド後）
+# Serve static files (after frontend build)
 if FRONTEND_DIST.exists():
-    # 静的アセット（js, css, etc）
+    # Static assets (js, css, etc.)
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 
-    # SPAルーティング: すべてのパスでindex.htmlを返す
+    # SPA routing: return index.html for all paths
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        # ファイルが存在すればそれを返す
+        # Return file if it exists
         file_path = FRONTEND_DIST / full_path
         if file_path.is_file():
             return FileResponse(file_path)
-        # それ以外はindex.html（SPAルーティング）
+        # Otherwise return index.html (SPA routing)
         return FileResponse(FRONTEND_DIST / "index.html")
 
 
