@@ -89,14 +89,14 @@ GX10_HOST = os.getenv("GX10_HOST", "localhost")
 GX10_BASE_URL = os.getenv("GX10_BASE_URL", f"http://{GX10_HOST}:8001/v1")
 GX10_MODEL = os.getenv("GX10_MODEL", "gemma4-26b-a4b")
 gx10_client = AsyncOpenAI(base_url=GX10_BASE_URL, api_key="gx10")
-# Nemotron ASR server on GX10 (asr_server/asr_server.py, design §13). Deepgram-like protocol.
+# Nemotron ASR server on GX10 (asr_server/asr_server.py, spec §4.2). Deepgram-like protocol.
 NEMOTRON_ASR_URL = os.getenv("NEMOTRON_ASR_URL", f"ws://{GX10_HOST}:8092/ws")
 ASREngine = Literal["deepgram", "nemotron"]
-INSIGHT_HISTORY_MAX = 30
+INSIGHT_HISTORY_MAX = 30  # utterances of context given to the insight prompt
 # "Story" (あらすじ): utterances are grouped into chunks and each closed chunk gets a short summary.
 STORY_CHUNK_UTTERANCES = int(os.getenv("STORY_CHUNK_UTTERANCES", "8"))
 STORY_CHUNK_SECONDS = float(os.getenv("STORY_CHUNK_SECONDS", "90"))
-STORY_TURN_END_MIN_UTTERANCES = 4  # also close a chunk when the other party's turn ends, if this many  # utterances of context given to the insight prompt
+STORY_TURN_END_MIN_UTTERANCES = 4  # also close a chunk when the other party's turn ends, if this many
 # Deepgram finalizes fragments mid-sentence ("...and my task" / "was to source a supplier").
 # In gx10 mode fragments are joined until UtteranceEnd (utterance_end_ms of no words),
 # and the final translation is made for the whole utterance.

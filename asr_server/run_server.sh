@@ -1,5 +1,6 @@
 #!/bin/bash
-# Start the Nemotron ASR server on GX10 (docs/designs/meeting-assist-local.md §13).
+# Start the Nemotron ASR server manually (docs/designs/meeting-assist-local.md §4.2).
+# Normally it runs as nemotron-asr.service (deploy/gx10/).
 # Deploy from WSL:  scp asr_server/{asr_server.py,run_server.sh} gx10:~/work/nemotron-asr/server/
 # Start on GX10:    bash ~/work/nemotron-asr/server/run_server.sh        (stop: pkill -f asr_server.py)
 cd "$(dirname "$0")"

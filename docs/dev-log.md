@@ -193,7 +193,7 @@ Timekettle M3、Vasco E1、OPPO Enco X3s などは**ビームフォーミング�
 
 ## 2026-11-03: ローカル（GX10）会議アシスト — Phase 1・Phase 2
 
-詳細な設計・計測・不具合の経緯は [docs/designs/meeting-assist-local.md](designs/meeting-assist-local.md)。
+現在の仕様は [docs/designs/meeting-assist-local.md](designs/meeting-assist-local.md)、設計・計測・不具合の経緯は [meeting-assist-local-history.md](designs/meeting-assist-local-history.md)。
 
 ### やったこと
 - LLM を API から **GX10 のローカル vLLM（Gemma 4 26B-A4B FP8）** に切り替えた会議アシストを新設（`#meeting` 画面、モデル `gx10`）

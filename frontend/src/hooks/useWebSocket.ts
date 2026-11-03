@@ -67,7 +67,7 @@ export type TranslationPartialMessage = {
   is_final?: boolean;
 };
 
-// gx10 meeting mode (docs/designs/meeting-assist-local.md §5.4)
+// gx10 meeting mode (docs/designs/meeting-assist-local.md §8.2)
 export type TranslationFinalMessage = {
   type: 'translation_final';
   translation: string;

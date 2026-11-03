@@ -12,7 +12,11 @@ https://<GX10 の Tailscale 名>:10443/#meeting      ← tailnet 内のみ（Fun
 git clone https://github.com/matu79go/ai_translator.git ~/ai_translator
 python3 -m venv ~/ai_translator/backend/.venv && ~/ai_translator/backend/.venv/bin/pip install -r ~/ai_translator/backend/requirements.txt
 # backend/.env を用意（API キー + GX10_HOST=127.0.0.1）。chmod 600
-# Nemotron の venv（~/venvs/nemotron-asr）は docs/designs/meeting-assist-local.md §12 の手順で作成済みであること
+# Nemotron の venv（GX10 は aarch64 / CUDA 13。torch は単独で入れる。torchaudio を一緒に入れると依存解決が止まる）
+python3.12 -m venv ~/venvs/nemotron-asr
+~/venvs/nemotron-asr/bin/pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+~/venvs/nemotron-asr/bin/pip install "transformers>=5.13" numpy soundfile accelerate librosa websockets
+~/venvs/nemotron-asr/bin/hf download nvidia/nemotron-3.5-asr-streaming-0.6b --include "*.json" model.safetensors
 tailscale serve --bg --https=10443 http://127.0.0.1:8100
 ```
 

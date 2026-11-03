@@ -1,6 +1,6 @@
 """Nemotron-3.5 ASR streaming server with a Deepgram-like WebSocket protocol.
 
-Design: ai_translator docs/designs/meeting-assist-local.md §13.
+Spec: ai_translator docs/designs/meeting-assist-local.md §4.2, §8.3.
 
 Client -> server: binary 16 kHz mono int16 PCM, or {"type": "CloseStream"}
 Server -> client:
