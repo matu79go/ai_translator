@@ -78,6 +78,7 @@ export type TranslationFinalMessage = {
 export type InsightPartialMessage = {
   type: 'insight_partial';
   need: string;
+  situation?: string;
 };
 
 export type AsrChangedMessage = {
@@ -86,9 +87,27 @@ export type AsrChangedMessage = {
   ok: boolean;
 };
 
+export type StoryProgressMessage = {
+  type: 'story_progress';
+  index: number;
+  start: number;  // seconds since the session started
+  n: number;
+};
+
+export type StoryMessage = {
+  type: 'story';
+  index: number;
+  start: number;
+  n: number;
+  first: string;  // first utterance of the chunk (= translation source_text)
+  title: string;
+  summary: string;
+};
+
 export type InsightMessage = {
   type: 'insight';
   need: string;
+  situation?: string;
   ready: boolean;
   replies: string[];
 };
@@ -100,7 +119,8 @@ export type SpeculativeTranslationMessage = {
 };
 
 export type WebSocketMessage = TranscriptMessage | StatusMessage | ErrorMessage | IntentMessage | SummaryMessage | HintsMessage | IntentPartialMessage | TranslationPartialMessage | SpeculativeTranslationMessage
-  | TranslationFinalMessage | InsightPartialMessage | InsightMessage | AsrChangedMessage;
+  | TranslationFinalMessage | InsightPartialMessage | InsightMessage | AsrChangedMessage
+  | StoryProgressMessage | StoryMessage;
 
 type UseWebSocketOptions = {
   url: string;

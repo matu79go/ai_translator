@@ -92,7 +92,11 @@ gx10_client = AsyncOpenAI(base_url=GX10_BASE_URL, api_key="gx10")
 # Nemotron ASR server on GX10 (asr_server/asr_server.py, design §13). Deepgram-like protocol.
 NEMOTRON_ASR_URL = os.getenv("NEMOTRON_ASR_URL", f"ws://{GX10_HOST}:8092/ws")
 ASREngine = Literal["deepgram", "nemotron"]
-INSIGHT_HISTORY_MAX = 30  # utterances of context given to the insight prompt
+INSIGHT_HISTORY_MAX = 30
+# "Story" (あらすじ): utterances are grouped into chunks and each closed chunk gets a short summary.
+STORY_CHUNK_UTTERANCES = int(os.getenv("STORY_CHUNK_UTTERANCES", "8"))
+STORY_CHUNK_SECONDS = float(os.getenv("STORY_CHUNK_SECONDS", "90"))
+STORY_TURN_END_MIN_UTTERANCES = 4  # also close a chunk when the other party's turn ends, if this many  # utterances of context given to the insight prompt
 # Deepgram finalizes fragments mid-sentence ("...and my task" / "was to source a supplier").
 # In gx10 mode fragments are joined until UtteranceEnd (utterance_end_ms of no words),
 # and the final translation is made for the whole utterance.
@@ -274,13 +278,98 @@ def build_translation_only_prompt(source_lang: str, target_lang: str) -> str:
 
 
 def build_insight_prompt() -> str:
-    """GX10 meeting mode: the other party's underlying need + replies. Need comes first so it streams early."""
+    """GX10 meeting mode: the other party's situation, underlying need, and replies.
+
+    situation comes first so the model fixes whose perspective it is before writing the need
+    (without it, a lecture's topic was written as the speaker's wish and echoed back as the
+    user's wish: "知りたい" -> "教えてください"). It costs ~0.16s before the need appears.
+    """
     return """あなたはオンライン会議で日本人ユーザーを支える会話アシスタントです。
-相手（英語話者）の発言の流れから、相手が本当に求めているもの（本音）を読み取ってください。
-- need: 相手の本音を日本語で1文、30字以内。表面の発言の言い換えではなく、裏にある欲求・懸念を書く
+「相手」は英語で話している人、「ユーザー」はそれを聞いていて、次に相手に返事をする人です。
+相手の発言の流れから、次の順に考えてJSONで出力してください。
+- situation: 相手が今どういう立場で話しているか（例: 質問している / 説明・講義している / 提案している / 不満を伝えている / 雑談している）を日本語で15字以内
+- need: 相手がユーザーに本当に求めているもの（本音）を日本語で1文、30字以内。話のテーマの言い換えではなく、相手の欲求・懸念を書く。説明・講義している相手なら「伝わったか」「納得してほしい」など話し手としての欲求になる
 - ready: 相手がまだ前置きの段階で本題が見えなければ false
-- replies: 本音に応える、相手の心に刺さる返事を2つ。ユーザーがそのまま言える自然な日本語の口語、各40字以内
-JSONのみ、この順で: {"need":"...","ready":true,"replies":["...","..."]}"""
+- replies: ユーザーが相手に向かって言う返事を2つ。need を満たす・応える内容にする。need をユーザー自身の願望として言い直さない。そのまま言える自然な日本語の口語、各40字以内
+JSONのみ、この順で: {"situation":"...","need":"...","ready":true,"replies":["...","..."]}"""
+
+
+def build_story_prompt() -> str:
+    """GX10 meeting mode: summary of one chunk of the conversation, for the running synopsis."""
+    return """あなたはオンライン会議の議事メモ係です。
+英語の会話の一区切り（相手の発言）を、日本語で短くまとめてください。
+- title: この区切りの話題の見出し。日本語15字以内（例: 自己紹介と経歴 / 志望理由 / 価格への懸念）
+- summary: 何が話されたかのあらすじ。日本語60字以内。固有名詞・数字は残す
+- これまでの見出しが与えられたら、話の続きとして重複しない見出しにする
+JSONのみ: {"title":"...","summary":"..."}"""
+
+
+class StorySummarizer:
+    """Groups utterances into chunks (8 utterances / 90 s / turn end) and summarizes each closed chunk.
+
+    Messages: story_progress {index, start, n} while a chunk fills up;
+              story {index, start, n, first, title, summary} when it is summarized.
+    `start` is seconds since the session started; `first` is the first utterance's text
+    (= translation source_text) so the page can jump to it.
+    """
+
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+        self.t0 = time.time()
+        self.items: list[str] = []
+        self.chunk_start = 0.0
+        self.index = 0
+        self.titles: list[str] = []
+
+    async def add(self, utterance: str):
+        now = time.time() - self.t0
+        if not self.items:
+            self.chunk_start = now
+        self.items.append(utterance)
+        if len(self.items) >= STORY_CHUNK_UTTERANCES or (
+                now - self.chunk_start >= STORY_CHUNK_SECONDS and len(self.items) >= 2):
+            await self.close()
+        else:
+            await self._send({"type": "story_progress", "index": self.index,
+                              "start": round(self.chunk_start), "n": len(self.items)})
+
+    async def on_turn_end(self):
+        if len(self.items) >= STORY_TURN_END_MIN_UTTERANCES:
+            await self.close()
+
+    async def close(self):
+        if not self.items:
+            return
+        items, index, start = self.items, self.index, self.chunk_start
+        self.items, self.index = [], self.index + 1
+        asyncio.create_task(self._summarize(items, index, start))
+
+    async def _summarize(self, items: list[str], index: int, start: float):
+        prev = ("これまでの見出し: " + " / ".join(self.titles[-5:]) + "\n\n") if self.titles else ""
+        t = time.time()
+        try:
+            r = await gx10_client.chat.completions.create(
+                model=GX10_MODEL, temperature=0.3, max_tokens=200,
+                response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": build_story_prompt()},
+                          {"role": "user", "content": prev + "この区切りの発言:\n" + "\n".join(items)}],
+            )
+            out = r.choices[0].message.content or ""
+            data = json.loads(out[out.find("{"):out.rfind("}") + 1])
+        except Exception as e:
+            print(f"[Story] #{index} error: {type(e).__name__}: {e}", flush=True)
+            data = {"title": "（要約できませんでした）", "summary": ""}
+        title = str(data.get("title", ""))[:30]
+        self.titles.append(title)
+        print(f"[Story] #{index} ({len(items)} utt) in {(time.time() - t)*1000:.0f}ms: {title}", flush=True)
+        await self._send({"type": "story", "index": index, "start": round(start), "n": len(items),
+                          "first": items[0], "title": title, "summary": str(data.get("summary", ""))})
+
+    async def _send(self, msg: dict):
+        try:
+            await self.websocket.send_json(msg)
+        except Exception:
+            pass
 
 
 def build_summary_prompt(target_lang: str) -> str:
@@ -384,6 +473,9 @@ class SummaryGenerator:
         self._waiting_silence = False  # not reached if cancelled
 
         if self.model == "gx10":
+            hook = getattr(self, "on_turn_end", None)
+            if hook:
+                await hook()
             await self._generate_insight_gx10()
             return
 
@@ -559,13 +651,19 @@ class SummaryGenerator:
                     m = re.search(r'"need"\s*:\s*"([^"]+)"', out)
                     if m:
                         sent_need = True
+                        sit = re.search(r'"situation"\s*:\s*"([^"]*)"', out)
                         print(f"[Insight GX10] @{(time.time() - start)*1000:.0f}ms NEED: {m.group(1)}", flush=True)
-                        await self.websocket.send_json({"type": "insight_partial", "need": m.group(1)})
+                        await self.websocket.send_json({
+                            "type": "insight_partial",
+                            "need": m.group(1),
+                            "situation": sit.group(1) if sit else "",
+                        })
             data = json.loads(out[out.find("{"):out.rfind("}") + 1])
             print(f"[Insight GX10] Complete in {(time.time() - start)*1000:.0f}ms ready={data.get('ready')}", flush=True)
             await self.websocket.send_json({
                 "type": "insight",
                 "need": data.get("need", ""),
+                "situation": data.get("situation", ""),
                 "ready": bool(data.get("ready", True)),
                 "replies": [r for r in data.get("replies", []) if isinstance(r, str)],
             })
@@ -1285,6 +1383,8 @@ class TranscriptionManager:
             websocket, target_lang=target_lang
         )
         self.keyword_predictor = KeywordPredictor(websocket)
+        self.story = StorySummarizer(websocket)
+        self.summary_generator.on_turn_end = self.story.on_turn_end
         self.utterance_fragments: list[str] = []  # gx10: finalized fragments of the current utterance
         self._flush_fallback: Optional[asyncio.Task] = None
 
@@ -1315,6 +1415,7 @@ class TranscriptionManager:
         # cuts at speech_final / max words just record the utterance.
         turn_may_end = reason in ("UtteranceEnd", "fallback")
         self.summary_generator.add_transcript(utterance, start_timer=turn_may_end)
+        await self.story.add(utterance)
 
     async def _on_utterance_end(self, *args, **kwargs):
         if self._gx10():

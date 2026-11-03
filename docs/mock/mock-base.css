@@ -1,0 +1,79 @@
+/* Shared tokens + slim control bar for the meeting-assist mocks (navy theme). */
+:root, :root[data-theme="dark"] {
+  --bg: #070b12; --panel: #0c1420; --panel-2: #0a111b; --line: #1e3a55; --line-soft: #142638;
+  --ink: #e2effc; --ink-2: #a9c3dc; --dim: #7090ad;
+  --accent: #37d5ff; --accent-soft: rgba(55, 213, 255, .14);
+  --amber: #ffcf5a; --amber-soft: rgba(255, 207, 90, .10); --amber-line: #5a4a1f;
+  --ok: #5dffb0; --ok-line: #1f5a41; --rec: #ff5d6c;
+  --live-bg: #0e2233; --live-line: #2a6d93;
+  --sans: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f3f5f8; --panel: #ffffff; --panel-2: #f7f9fc; --line: #c5d0dc; --line-soft: #e3e8ee;
+  --ink: #17202c; --ink-2: #3b4a5c; --dim: #66768a;
+  --accent: #0a84b8; --accent-soft: rgba(10, 132, 184, .10);
+  --amber: #9a6a00; --amber-soft: #fff6dc; --amber-line: #ecd291;
+  --ok: #138a55; --ok-line: #9fd8bd; --rec: #d63447;
+  --live-bg: #eaf5fb; --live-line: #8cc6e2;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-text-size-adjust: 100%; }
+button { font: inherit; color: inherit; cursor: pointer; }
+
+/* ── slim control bar (one row on desktop, wraps tidily on phones) ── */
+.bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2);
+}
+.bar h1 { margin: 0 6px 0 0; font-size: 15px; letter-spacing: .08em; color: var(--accent); font-weight: 700; white-space: nowrap; }
+.rec {
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
+  display: grid; place-items: center; flex: none;
+}
+.rec::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--rec); }
+.rec.on { border-color: var(--rec); box-shadow: 0 0 0 3px rgba(255, 93, 108, .2); }
+.rec.on::before { border-radius: 3px; animation: pulse 1.4s ease-in-out infinite; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; }
+.seg span.k { padding: 5px 7px; color: var(--dim); background: var(--panel); }
+.seg button { border: 0; background: transparent; padding: 5px 9px; color: var(--ink-2); white-space: nowrap; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.conn {
+  margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--ok-line);
+  color: var(--ok); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+}
+.conn::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.icon { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; width: 32px; height: 32px; display: grid; place-items: center; font-size: 14px; color: var(--ink-2); flex: none; }
+.help { position: relative; }
+.help .pop {
+  position: absolute; right: 0; top: 40px; z-index: 20; width: min(340px, 86vw);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  font-size: 13px; line-height: 1.6; color: var(--ink-2); box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+.help .pop b { color: var(--ink); }
+
+/* ── shared pieces ── */
+.situation { font-size: 12px; color: var(--amber); opacity: .9; }
+.need { font-size: 20px; font-weight: 700; line-height: 1.45; color: var(--ink); }
+.reply { background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 11px; font-size: 15px; line-height: 1.55; }
+.en { font-size: 12px; color: var(--dim); line-height: 1.45; margin-top: 3px; }
+.jump {
+  position: absolute; right: 16px; bottom: 16px; z-index: 5; border: 1px solid var(--accent); background: var(--panel);
+  color: var(--accent); border-radius: 999px; padding: 6px 12px; font-size: 13px; box-shadow: 0 6px 16px rgba(0, 0, 0, .3);
+}
+.dots::after { content: "…"; animation: dots 1.2s steps(4, end) infinite; display: inline-block; width: 1.2em; overflow: hidden; vertical-align: bottom; }
+.thinking { color: var(--dim); font-size: 13px; }
+@keyframes pulse { 50% { opacity: .35; } }
+@keyframes dots { 0% { width: 0; } 100% { width: 1.2em; } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* phones: hide text labels in the bar, keep controls tappable */
+@media (max-width: 640px) {
+  .bar { gap: 6px; padding: 6px 8px; }
+  .bar h1 { display: none; }
+  .seg span.k { display: none; }
+  .seg button { padding: 6px 8px; }
+  .conn { font-size: 11px; padding: 3px 8px; }
+}

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>会議アシスト UI案</title>
+<link rel="stylesheet" href="mock-base.css">
+<style>
+  body { padding: 24px 16px; }
+  .col { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 20px; color: var(--accent); margin: 0 0 6px; }
+  p.lead { color: var(--ink-2); font-size: 14px; line-height: 1.7; margin: 0 0 20px; }
+  .opt { display: block; text-decoration: none; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; }
+  .opt:hover { border-color: var(--accent); }
+  .opt h2 { margin: 0 0 6px; font-size: 16px; }
+  .opt p { margin: 0; font-size: 14px; line-height: 1.7; color: var(--ink-2); }
+  .opt ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--dim); line-height: 1.7; }
+  .note { font-size: 13px; color: var(--dim); line-height: 1.7; margin-top: 18px; }
+  .top { display: flex; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<div class="col">
+  <div class="top"><button class="icon" id="theme" title="テーマ"></button></div>
+  <h1>会議アシスト UI案（モック）</h1>
+  <p class="lead">3案とも、操作は上の細い1行にまとめ、手順の説明は「?」に隠しています。会話は新しい発言で自動的に追いかけ、自分で上に戻って読んでいる間は止まって「↓ 最新へ」が出ます。各ページでは面接の会話が自動で流れます。スマホの見え方は、ブラウザの幅を狭めるか、開発者ツールのスマホ表示で確認できます。</p>
+
+  <a class="opt" href="a-two-column.html">
+    <h2>案A 2カラム＋チャット</h2>
+    <p>PC では左に会話、右に本音。今話している行は会話の一番下に色付きで出ます。</p>
+    <ul>
+      <li>スマホ：会話を全面に。本音は下にたたんだ帯で出し、引き上げると返事の案</li>
+      <li>向いている：PC の横に開いておく使い方。今の画面に一番近い</li>
+    </ul>
+  </a>
+
+  <a class="opt" href="b-subtitle.html">
+    <h2>案B 字幕＋履歴</h2>
+    <p>「いま話していること」を上部の決まった場所に大きく出す。履歴は新しい順に下へ。</p>
+    <ul>
+      <li>今の発言の位置が常に同じなので、どこを読めばいいか迷わない</li>
+      <li>スマホ：字幕 → 本音（タップで返事の案）→ 履歴の順に縦に並ぶ</li>
+      <li>向いている：会議に集中しながら、ちらっと見る使い方</li>
+    </ul>
+  </a>
+
+  <a class="opt" href="c-timeline.html">
+    <h2>案C タイムライン一体型</h2>
+    <p>会話も本音も1本の流れ。相手が話し終えたところに本音のカードが入る。最新の本音は上に小さく固定。</p>
+    <ul>
+      <li>スマホを主に考えた縦1列。PC では中央に置く</li>
+      <li>会話の流れと本音の対応が分かりやすい。あとから読み返しやすい</li>
+    </ul>
+  </a>
+
+  <p class="note">組み合わせも可能です（例：案B の字幕 ＋ 案C の本音カード）。ライト／ダークは右上で切り替えられます。</p>
+</div>
+<script src="mock-data.js"></script>
+<script>setupTheme(document.getElementById("theme"));</script>
+</body>
+</html>

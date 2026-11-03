@@ -11,6 +11,9 @@ export interface AudioRecorderProps {
   /** Show the "meeting audio" (screen/tab share) input option. */
   enableSystemAudio?: boolean;
   defaultSource?: AudioSource;
+  /** 'compact': small record button + input switch for a toolbar (meeting page, uses meeting.css classes). */
+  variant?: 'default' | 'compact';
+  onRecordingChange?: (recording: boolean) => void;
 }
 
 /**
@@ -46,6 +49,8 @@ export function AudioRecorder({
   onStop,
   enableSystemAudio = false,
   defaultSource = 'mic',
+  variant = 'default',
+  onRecordingChange,
 }: AudioRecorderProps) {
   const [inputSource, setInputSource] = useState<AudioSource>(enableSystemAudio ? defaultSource : 'mic');
   const [isRecording, setIsRecording] = useState(false);
@@ -205,6 +210,45 @@ export function AudioRecorder({
       startRecording();
     }
   };
+
+  useEffect(() => { onRecordingChange?.(isRecording); }, [isRecording, onRecordingChange]);
+
+  if (variant === 'compact') {
+    return (
+      <>
+        <button
+          className={`rec${isRecording ? ' on' : ''}`}
+          onClick={handleClick}
+          disabled={isInitializing}
+          title={isRecording ? '停止' : '開始'}
+          aria-label={isRecording ? '停止' : '開始'}
+        />
+        {enableSystemAudio && (
+          <div className="seg" title="音声の取り方">
+            <span className="k">入力</span>
+            {([
+              { value: 'system', label: '会議の音声' },
+              { value: 'mic', label: 'マイク' },
+            ] as const).map(({ value, label }) => (
+              <button key={value} className={inputSource === value ? 'on' : ''}
+                onClick={() => setInputSource(value)} disabled={isRecording}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {inputSource === 'mic' && audioDevices.length > 1 && (
+          <select className="mic-select" value={selectedDeviceId} disabled={isRecording}
+            onChange={(e) => setSelectedDeviceId(e.target.value)}>
+            {audioDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 8)}`}</option>
+            ))}
+          </select>
+        )}
+        {error && <span className="rec-error">{error}</span>}
+      </>
+    );
+  }
 
   return (
     <div className="flex flex-col items-center gap-4">

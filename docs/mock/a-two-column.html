@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>案A 2カラム</title>
+<link rel="stylesheet" href="mock-base.css">
+<style>
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 12px; padding: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; min-height: 0; position: relative; display: flex; flex-direction: column; }
+  .panel h2 { margin: 0; padding: 10px 14px; font-size: 13px; color: var(--ink-2); border-bottom: 1px solid var(--line-soft); display: flex; gap: 8px; align-items: center; }
+  .panel h2 .tag { margin-left: auto; font-weight: 400; color: var(--dim); font-size: 12px; }
+
+  /* conversation: newest at the bottom, always followed */
+  #lines { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
+  .line { border-left: 3px solid var(--line); padding: 2px 0 2px 12px; animation: rise .25s ease-out; }
+  .line .ja { font-size: 18px; line-height: 1.6; }
+  .line.live { border-left-color: var(--accent); background: var(--live-bg); border-radius: 0 10px 10px 0; padding: 8px 12px; }
+  .line.live .ja { color: var(--ink-2); }
+  .line.live .badge { font-size: 11px; color: var(--accent); margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+  .line.live .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1s infinite; }
+  .turn-sep { align-self: center; font-size: 11px; color: var(--dim); border: 1px dashed var(--line); border-radius: 999px; padding: 1px 10px; }
+
+  /* insight side panel */
+  #insight { padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+  #insight.fresh { box-shadow: inset 0 0 0 1px var(--amber-line); }
+  .label { font-size: 12px; color: var(--dim); margin-top: 6px; }
+  .past { font-size: 13px; color: var(--dim); display: flex; flex-direction: column; gap: 4px; }
+
+  /* phones: conversation full screen, insight = collapsible bottom sheet */
+  .sheet-handle { display: none; }
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; padding: 0; gap: 0; }
+    .conv { border: 0; border-radius: 0; }
+    .conv h2 { display: none; }
+    .line .ja { font-size: 19px; }
+    .side {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; border-radius: 16px 16px 0 0;
+      max-height: 22dvh; transition: max-height .25s ease; box-shadow: 0 -10px 30px rgba(0, 0, 0, .35);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    .side.open { max-height: 70dvh; }
+    .side h2 { display: none; }
+    .sheet-handle { display: block; width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 8px auto 0; border: 0; }
+    #insight { padding: 8px 14px 14px; }
+    .side:not(.open) .more { display: none; }
+    .need { font-size: 17px; }
+    #lines { padding-bottom: 24dvh; }
+    .jump { bottom: calc(23dvh + 8px); }
+  }
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>Meeting Assist</h1>
+  <button class="rec on" title="録音停止"></button>
+  <div class="seg"><span class="k">入力</span><button class="on">会議の音声</button><button>マイク</button></div>
+  <div class="seg"><span class="k">ASR</span><button>Deepgram</button><button class="on">Nemotron</button></div>
+  <span class="conn">録音中 · Nemotron</span>
+  <span class="help"><button class="icon" id="helpBtn" title="使い方">?</button>
+    <div class="pop" id="helpPop" hidden><b>会議の音声</b>：共有画面で「画面全体」を選び「システム音声を共有」をオン（Zoom / Teams アプリでも可）。ブラウザ会議ならその「タブ」を選び「タブの音声を共有」をオン。</div></span>
+  <button class="icon" id="theme" title="テーマ"></button>
+</div>
+
+<main>
+  <section class="panel conv">
+    <h2>リアルタイム翻訳 <span class="tag">新しい発言が下に出ます</span></h2>
+    <div id="lines"></div>
+    <button class="jump" id="jump" hidden>↓ 最新へ</button>
+  </section>
+
+  <aside class="panel side" id="side">
+    <button class="sheet-handle" id="handle" aria-label="本音を広げる"></button>
+    <h2>💡 相手の本音</h2>
+    <div id="insight"><p class="thinking">相手が話し終えると表示されます</p></div>
+  </aside>
+</main>
+
+<script src="mock-data.js"></script>
+<script>
+  setupTheme(document.getElementById("theme"));
+  const helpBtn = document.getElementById("helpBtn"), helpPop = document.getElementById("helpPop");
+  helpBtn.onclick = () => (helpPop.hidden = !helpPop.hidden);
+  const side = document.getElementById("side");
+  document.getElementById("handle").onclick = () => side.classList.toggle("open");
+
+  const lines = document.getElementById("lines"), insight = document.getElementById("insight");
+  const follow = autoFollow(lines, document.getElementById("jump"));
+  let liveEl = null, past = [];
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  startDemo({
+    onReset() { lines.innerHTML = ""; liveEl = null; past = []; insight.innerHTML = '<p class="thinking">相手が話し終えると表示されます</p>'; },
+    onLive({ en, ja }) {
+      if (!liveEl) { liveEl = document.createElement("div"); liveEl.className = "line live"; lines.appendChild(liveEl); }
+      liveEl.innerHTML = `<div class="badge">話し中</div><div class="ja">${esc(ja)}</div><div class="en">${esc(en)}</div>`;
+      follow();
+    },
+    onFinal({ en, ja }) {
+      if (!liveEl) { liveEl = document.createElement("div"); lines.appendChild(liveEl); }
+      liveEl.className = "line"; liveEl.innerHTML = `<div class="ja">${esc(ja)}</div><div class="en">${esc(en)}</div>`;
+      liveEl = null; follow();
+    },
+    onTurnEnd() {
+      const sep = document.createElement("div"); sep.className = "turn-sep"; sep.textContent = "相手が話し終えました";
+      lines.appendChild(sep); follow();
+      insight.innerHTML = '<p class="thinking">本音を考え中<span class="dots"></span></p>';
+    },
+    onInsightPartial({ situation, need }) {
+      insight.innerHTML = `<div class="situation">相手は${esc(situation)}</div><div class="need">${esc(need)}</div>
+        <div class="more"><div class="label">返事の案</div><p class="thinking">考え中<span class="dots"></span></p></div>`;
+      insight.classList.add("fresh"); setTimeout(() => insight.classList.remove("fresh"), 1500);
+    },
+    onInsight(i) {
+      insight.innerHTML = `<div class="situation">相手は${esc(i.situation)}</div><div class="need">${esc(i.need)}</div>
+        <div class="more"><div class="label">返事の案</div>${i.replies.map((r) => `<div class="reply">${esc(r)}</div>`).join("")}
+        ${past.length ? `<div class="label">これまでの本音</div><div class="past">${past.slice().reverse().map((n) => `<span>・${esc(n)}</span>`).join("")}</div>` : ""}</div>`;
+      past = [...past.filter((n) => n !== i.need), i.need].slice(-5);
+    },
+  });
+</script>
+</body>
+</html>

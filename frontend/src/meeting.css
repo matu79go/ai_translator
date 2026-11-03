@@ -1,0 +1,135 @@
+/* Meeting assist page (#meeting). Layout = docs/mock/b-subtitle.html (subtitle + history).
+   Scoped to .ma so the other pages are unaffected. Theme: .ma[data-theme="light" | "dark"]. */
+.ma {
+  --bg: #f3f5f8; --panel: #ffffff; --panel-2: #f7f9fc; --line: #c5d0dc; --line-soft: #e3e8ee;
+  --ink: #17202c; --ink-2: #3b4a5c; --dim: #66768a;
+  --accent: #0a84b8; --accent-soft: rgba(10, 132, 184, .10);
+  --amber: #9a6a00; --amber-soft: #fff6dc; --amber-line: #ecd291;
+  --ok: #138a55; --ok-line: #9fd8bd; --rec: #d63447; --err: #c62f40; --err-line: #f0b3ba;
+  --live-bg: #eaf5fb; --live-line: #8cc6e2;
+  --sans: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif;
+  color-scheme: light;
+  height: 100dvh; display: flex; flex-direction: column;
+  background: var(--bg); color: var(--ink); font-family: var(--sans);
+}
+.ma[data-theme="dark"] {
+  --bg: #070b12; --panel: #0c1420; --panel-2: #0a111b; --line: #1e3a55; --line-soft: #142638;
+  --ink: #e2effc; --ink-2: #a9c3dc; --dim: #7090ad;
+  --accent: #37d5ff; --accent-soft: rgba(55, 213, 255, .14);
+  --amber: #ffcf5a; --amber-soft: rgba(255, 207, 90, .10); --amber-line: #5a4a1f;
+  --ok: #5dffb0; --ok-line: #1f5a41; --rec: #ff5d6c; --err: #ff5d6c; --err-line: #5a1f2a;
+  --live-bg: #0e2233; --live-line: #2a6d93;
+  color-scheme: dark;
+}
+.ma button { font: inherit; color: inherit; cursor: pointer; }
+
+/* ── slim control bar ── */
+.ma .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.ma .bar h1 { margin: 0 6px 0 0; font-size: 15px; letter-spacing: .08em; color: var(--accent); font-weight: 700; white-space: nowrap; }
+.ma .rec { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); display: grid; place-items: center; flex: none; }
+.ma .rec::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--rec); }
+.ma .rec.on { border-color: var(--rec); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rec) 20%, transparent); }
+.ma .rec.on::before { border-radius: 3px; animation: ma-pulse 1.4s ease-in-out infinite; }
+.ma .rec:disabled { opacity: .5; cursor: wait; }
+.ma .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; }
+.ma .seg .k { padding: 5px 7px; color: var(--dim); background: var(--panel); }
+.ma .seg button { border: 0; background: transparent; padding: 5px 9px; color: var(--ink-2); white-space: nowrap; }
+.ma .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.ma .seg button:disabled:not(.on) { opacity: .45; cursor: not-allowed; }
+.ma .mic-select { font-size: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink-2); padding: 5px 6px; max-width: 160px; }
+.ma .rec-error { font-size: 12px; color: var(--err); max-width: 420px; }
+.ma .conn { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; max-width: 52vw; overflow: hidden; text-overflow: ellipsis; }
+.ma .conn::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+.ma .conn.on { color: var(--ok); border-color: var(--ok-line); }
+.ma .conn.on::before { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.ma .conn.err { color: var(--err); border-color: var(--err-line); }
+.ma .conn.err::before { background: var(--err); }
+.ma .icon { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; width: 32px; height: 32px; display: grid; place-items: center; font-size: 14px; color: var(--ink-2); flex: none; }
+.ma .help { position: relative; }
+.ma .help .pop { position: absolute; right: 0; top: 40px; z-index: 20; width: min(360px, 88vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 13px; line-height: 1.7; color: var(--ink-2); box-shadow: 0 10px 30px rgba(0, 0, 0, .25); }
+.ma .help .pop b { color: var(--ink); }
+.ma .help .pop a { color: var(--accent); }
+
+/* ── layout ── */
+.ma main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: auto auto minmax(0, 1fr); gap: 12px; padding: 12px; }
+.ma .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.ma .panel h2 { margin: 0; padding: 9px 14px; font-size: 13px; color: var(--ink-2); border-bottom: 1px solid var(--line-soft); font-weight: 700; }
+
+/* "now": the sentence being spoken, always in the same place */
+.ma .now { grid-column: 1 / -1; background: var(--live-bg); border: 1px solid var(--live-line); border-radius: 14px; padding: 14px 18px; min-height: 128px; display: flex; flex-direction: column; justify-content: center; }
+.ma .now .state { font-size: 12px; color: var(--accent); display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.ma .now .state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.ma .now.speaking .state::before { animation: ma-pulse 1s infinite; }
+.ma .now.done .state { color: var(--dim); }
+.ma .now.done .state::before { background: var(--dim); }
+.ma .now .ja { font-size: 26px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
+.ma .now.speaking .ja { color: var(--ink-2); }
+.ma .now .ja.placeholder { font-size: 16px; font-weight: 400; color: var(--dim); }
+.ma .now .en { font-size: 14px; color: var(--dim); line-height: 1.45; margin-top: 3px; overflow-wrap: anywhere; }
+
+/* history: newest on top, right under the subtitle */
+.ma .hist { flex: 1; overflow-y: auto; padding: 4px 14px 14px; }
+.ma .h { padding: 10px 0; border-bottom: 1px solid var(--line-soft); animation: ma-rise .25s ease-out; }
+.ma .h .ja { font-size: 16px; line-height: 1.6; color: var(--ink-2); overflow-wrap: anywhere; }
+.ma .h:first-of-type .ja { color: var(--ink); }
+.ma .h .en { font-size: 12px; color: var(--dim); line-height: 1.45; margin-top: 3px; overflow-wrap: anywhere; }
+.ma .turn { font-size: 11px; color: var(--amber); padding: 8px 0 0; }
+.ma .empty { color: var(--dim); font-size: 13px; padding: 16px 0; }
+.ma .jump { position: absolute; right: 14px; top: 44px; z-index: 5; border: 1px solid var(--accent); background: var(--panel); color: var(--accent); border-radius: 999px; padding: 5px 12px; font-size: 12px; box-shadow: 0 6px 16px rgba(0, 0, 0, .2); }
+
+/* insight: right under the subtitle (PC: need left, replies right; phone: need, replies on tap) */
+.ma .ins { grid-column: 1 / -1; border-color: var(--amber-line); }
+.ma .ins-body { padding: 12px 16px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 20px; align-items: start; }
+.ma .ins-body .lead { display: flex; flex-direction: column; gap: 4px; }
+.ma .ins-body .more { display: flex; flex-direction: column; gap: 6px; }
+.ma .ins-body > .thinking { grid-column: 1 / -1; }
+.ma .ins.fresh { box-shadow: 0 0 0 2px var(--amber-line); transition: box-shadow .3s; }
+.ma .situation { font-size: 12px; color: var(--amber); }
+.ma .need { font-size: 20px; font-weight: 700; line-height: 1.45; color: var(--ink); }
+.ma .need.not-ready { color: var(--dim); }
+.ma .label { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.ma .reply { background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 11px; font-size: 15px; line-height: 1.55; }
+/* story (あらすじ) */
+.ma .story { flex: 1; overflow-y: auto; padding: 4px 14px 14px; }
+.ma .st { padding: 10px 0; border-bottom: 1px solid var(--line-soft); animation: ma-rise .25s ease-out; }
+.ma .st .top { display: flex; gap: 8px; align-items: baseline; }
+.ma .st time { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
+.ma .st .title { font-size: 14px; font-weight: 700; color: var(--ink); background: none; border: 0; padding: 0; text-align: left; }
+.ma .st .title:hover { color: var(--accent); text-decoration: underline; }
+.ma .st .sum { font-size: 13px; line-height: 1.6; color: var(--ink-2); margin-top: 2px; }
+.ma .st.progress .title { color: var(--dim); font-weight: 400; cursor: default; text-decoration: none; }
+.ma .h.flash { background: var(--accent-soft); border-radius: 8px; transition: background .6s; }
+/* panel titles: PC shows the title, phones show tabs (会話 / あらすじ) */
+.ma .tabs { display: none; gap: 4px; }
+.ma .tabs button { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 12px; font-size: 13px; color: var(--ink-2); }
+.ma .tabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.ma .thinking { color: var(--dim); font-size: 13px; margin: 0; }
+.ma .toggle { display: none; border: 0; background: none; color: var(--accent); font-size: 12px; text-align: left; padding: 0; }
+
+@keyframes ma-pulse { 50% { opacity: .35; } }
+@keyframes ma-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* phones: subtitle -> insight (replies on tap) -> history */
+@media (max-width: 860px) {
+  .ma main { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; padding: 8px; }
+  .ma .histp, .ma .storyp { grid-row: 3; grid-column: 1; }
+  .ma main:not(.tab-story) .storyp, .ma main.tab-story .histp { display: none; }
+  .ma .tabs { display: flex; }
+  .ma .pc-title { display: none; }
+  .ma .now { order: 0; min-height: 120px; padding: 12px 14px; }
+  .ma .now .ja { font-size: 22px; }
+  .ma .ins { order: 1; }
+  .ma .histp, .ma .storyp { order: 2; }
+  .ma .ins h2 { display: none; }
+  .ma .ins-body { padding: 10px 12px; gap: 6px; max-height: 45dvh; overflow-y: auto; grid-template-columns: 1fr; }
+  .ma .need { font-size: 16px; }
+  .ma .ins:not(.open) .more { display: none; }
+  .ma .toggle { display: block; }
+}
+@media (max-width: 640px) {
+  .ma .bar { gap: 6px; padding: 6px 8px; }
+  .ma .bar h1 { display: none; }
+  .ma .seg .k { display: none; }
+  .ma .seg button { padding: 6px 8px; }
+  .ma .conn { font-size: 11px; padding: 3px 8px; }
+}

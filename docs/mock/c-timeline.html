@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>案C タイムライン</title>
+<link rel="stylesheet" href="mock-base.css">
+<style>
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  .wrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+
+  /* latest need pinned under the bar; tap to jump to its card */
+  #pin {
+    display: none; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--amber-line);
+    background: var(--amber-soft); font-size: 13px; color: var(--ink); cursor: pointer;
+  }
+  #pin.show { display: flex; }
+  #pin b { color: var(--amber); font-weight: 700; white-space: nowrap; }
+  #pin span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #feed { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+  .col { max-width: 820px; margin: 0 auto; padding: 16px 14px 28px; display: flex; flex-direction: column; gap: 12px; }
+
+  .msg { max-width: 88%; align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: 4px 14px 14px 14px; padding: 10px 14px; animation: rise .25s ease-out; }
+  .msg .ja { font-size: 18px; line-height: 1.6; }
+  .msg.live { border-color: var(--live-line); background: var(--live-bg); }
+  .msg.live .ja { color: var(--ink-2); }
+  .msg.live .who { color: var(--accent); }
+  .who { font-size: 11px; color: var(--dim); margin-bottom: 2px; display: flex; gap: 6px; align-items: center; }
+  .msg.live .who::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1s infinite; }
+
+  .card {
+    align-self: stretch; border: 1px solid var(--amber-line); background: var(--amber-soft); border-radius: 14px;
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; animation: rise .3s ease-out; scroll-margin-top: 12px;
+  }
+  .card .head { font-size: 12px; color: var(--amber); font-weight: 700; display: flex; gap: 8px; align-items: center; }
+  .card .head .situation { font-weight: 400; }
+  .card .replies { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+  @media (max-width: 640px) {
+    .col { padding: 12px 10px 20px; gap: 10px; }
+    .msg { max-width: 96%; }
+    .msg .ja { font-size: 18px; }
+    .card .replies { grid-template-columns: 1fr; }
+    .need { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>Meeting Assist</h1>
+  <button class="rec on" title="録音停止"></button>
+  <div class="seg"><span class="k">入力</span><button class="on">会議の音声</button><button>マイク</button></div>
+  <div class="seg"><span class="k">ASR</span><button>Deepgram</button><button class="on">Nemotron</button></div>
+  <span class="conn">録音中 · Nemotron</span>
+  <span class="help"><button class="icon" id="helpBtn" title="使い方">?</button>
+    <div class="pop" id="helpPop" hidden><b>会議の音声</b>：共有画面で「画面全体」を選び「システム音声を共有」をオン（Zoom / Teams アプリでも可）。ブラウザ会議ならその「タブ」を選び「タブの音声を共有」をオン。</div></span>
+  <button class="icon" id="theme" title="テーマ"></button>
+</div>
+
+<div class="wrap">
+  <div id="pin"><b>💡 最新の本音</b><span id="pinText"></span></div>
+  <div id="feed"><div class="col" id="col"></div></div>
+  <button class="jump" id="jump" hidden>↓ 最新へ</button>
+</div>
+
+<script src="mock-data.js"></script>
+<script>
+  setupTheme(document.getElementById("theme"));
+  const helpBtn = document.getElementById("helpBtn"), helpPop = document.getElementById("helpPop");
+  helpBtn.onclick = () => (helpPop.hidden = !helpPop.hidden);
+  const feed = document.getElementById("feed"), col = document.getElementById("col");
+  const pin = document.getElementById("pin"), pinText = document.getElementById("pinText");
+  const follow = autoFollow(feed, document.getElementById("jump"));
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  let liveEl = null, card = null;
+  pin.onclick = () => card && card.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  startDemo({
+    onReset() { col.innerHTML = ""; liveEl = card = null; pin.classList.remove("show"); },
+    onLive({ en, ja }) {
+      if (!liveEl) { liveEl = document.createElement("div"); liveEl.className = "msg live"; col.appendChild(liveEl); }
+      liveEl.innerHTML = `<div class="who">相手 · 話し中</div><div class="ja">${esc(ja)}</div><div class="en">${esc(en)}</div>`;
+      follow();
+    },
+    onFinal({ en, ja }) {
+      liveEl.className = "msg"; liveEl.innerHTML = `<div class="who">相手</div><div class="ja">${esc(ja)}</div><div class="en">${esc(en)}</div>`;
+      liveEl = null; follow();
+    },
+    onTurnEnd() {
+      card = document.createElement("div"); card.className = "card";
+      card.innerHTML = `<div class="head">💡 相手の本音</div><p class="thinking">考え中<span class="dots"></span></p>`;
+      col.appendChild(card); follow();
+    },
+    onInsightPartial({ situation, need }) {
+      card.innerHTML = `<div class="head">💡 相手の本音 <span class="situation">相手は${esc(situation)}</span></div><div class="need">${esc(need)}</div><p class="thinking">返事の案を考え中<span class="dots"></span></p>`;
+      pinText.textContent = need; pin.classList.add("show"); follow();
+    },
+    onInsight(i) {
+      card.innerHTML = `<div class="head">💡 相手の本音 <span class="situation">相手は${esc(i.situation)}</span></div><div class="need">${esc(i.need)}</div>
+        <div class="replies">${i.replies.map((r) => `<div class="reply">${esc(r)}</div>`).join("")}</div>`;
+      follow();
+    },
+  });
+</script>
+</body>
+</html>
