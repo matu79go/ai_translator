@@ -147,9 +147,9 @@ LLMはストリーミングでJSONを**上から順番に**生成する。その
 2つのターミナルで起動:
 
 ```bash
-# ターミナル1: バックエンド
+# ターミナル1: バックエンド（初回のみ: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt）
 cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+.venv/bin/uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 # ターミナル2: フロントエンド（開発サーバー）
 cd frontend
@@ -157,6 +157,15 @@ npm run dev
 ```
 
 アクセス: http://localhost:5173
+
+- 会議アシスト（GX10 ローカルLLM、翻訳＋相手の本音）: http://localhost:5173/#meeting
+  設計: [docs/designs/meeting-assist-local.md](docs/designs/meeting-assist-local.md)
+- WSL の system Python は FastAPI と Starlette のバージョンが合わず起動しないので、`backend/.venv` を使う
+- 会議アシストで ASR に Nemotron（GX10）を使う場合は、GX10 で ASR サーバーを起動しておく（画面のトグルで Deepgram と切り替え）:
+  ```bash
+  scp asr_server/{asr_server.py,run_server.sh} gx10:~/work/nemotron-asr/server/   # コード変更時のみ
+  ssh gx10 'bash ~/work/nemotron-asr/server/run_server.sh'                          # 停止: ssh gx10 'pkill -f asr_server.py'
+  ```
 
 ### 携帯テスト（ngrok経由）
 
@@ -189,4 +198,9 @@ ngrok http 8000
 DEEPGRAM_API_KEY=your_deepgram_key
 OPENAI_API_KEY=your_openai_key
 GOOGLE_API_KEY=your_google_api_key
+# 会議アシスト（GX10）。GX10_HOST だけ設定すれば、下の2つはそこから決まる
+GX10_HOST=<GX10のIPアドレス>
+# GX10_BASE_URL=http://<GX10_HOST>:8001/v1
+# NEMOTRON_ASR_URL=ws://<GX10_HOST>:8092/ws
+GX10_MODEL=gemma4-26b-a4b
 ```

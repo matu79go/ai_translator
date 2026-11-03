@@ -1,11 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, Loader2 } from 'lucide-react';
+import { Mic, MicOff, Loader2, MonitorSpeaker } from 'lucide-react';
+
+export type AudioSource = 'mic' | 'system';
 
 export interface AudioRecorderProps {
   isConnected: boolean;
   onAudioData: (data: ArrayBuffer) => void;
   onStart: () => void;
   onStop: () => void;
+  /** Show the "meeting audio" (screen/tab share) input option. */
+  enableSystemAudio?: boolean;
+  defaultSource?: AudioSource;
+}
+
+/**
+ * Capture the audio the PC is playing (= remote meeting participants) via screen sharing.
+ * Windows Chrome/Edge: choose "Entire screen" + "Share system audio" (works with desktop Zoom/Teams).
+ * Any OS: choose a Chrome tab + "Share tab audio" (browser meetings).
+ */
+async function getSystemAudioStream(): Promise<MediaStream> {
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: true, // Chrome rejects audio-only requests
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
+    systemAudio: 'include',
+  } as DisplayMediaStreamOptions);
+  stream.getVideoTracks().forEach((t) => t.stop()); // video is not needed
+  if (stream.getAudioTracks().length === 0) {
+    stream.getTracks().forEach((t) => t.stop());
+    throw new Error(
+      '音声が共有されていません。共有画面で「画面全体」を選び「システム音声を共有」をオンにするか、' +
+      '会議のタブを選び「タブの音声を共有」をオンにしてください。'
+    );
+  }
+  return new MediaStream(stream.getAudioTracks());
 }
 
 export function AudioRecorder({
@@ -13,7 +44,10 @@ export function AudioRecorder({
   onAudioData,
   onStart,
   onStop,
+  enableSystemAudio = false,
+  defaultSource = 'mic',
 }: AudioRecorderProps) {
+  const [inputSource, setInputSource] = useState<AudioSource>(enableSystemAudio ? defaultSource : 'mic');
   const [isRecording, setIsRecording] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,10 +79,10 @@ export function AudioRecorder({
     }
   }, [selectedDeviceId]);
 
-  // Get device list on initial mount
+  // Get device list when the mic is the input (not on mount for meeting audio: avoids a needless mic prompt)
   useEffect(() => {
-    refreshDevices();
-  }, []);
+    if (inputSource === 'mic') refreshDevices();
+  }, [inputSource]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watch for device changes (e.g. Bluetooth connect/disconnect)
   useEffect(() => {
@@ -72,11 +106,15 @@ export function AudioRecorder({
       if (selectedDeviceId) {
         audioConstraints.deviceId = selectedDeviceId;
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
-      });
+      const stream = inputSource === 'system'
+        ? await getSystemAudioStream()
+        : await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
 
       mediaStreamRef.current = stream;
+      // User pressed the browser's "Stop sharing" (or the device went away)
+      stream.getAudioTracks().forEach((t) => {
+        t.onended = () => stopRecordingRef.current?.();
+      });
 
       // Start WebSocket connection
       onStart();
@@ -117,7 +155,7 @@ export function AudioRecorder({
     } finally {
       setIsInitializing(false);
     }
-  }, [onStart, onAudioData, selectedDeviceId]);
+  }, [onStart, onAudioData, selectedDeviceId, inputSource]);
 
   const stopRecording = useCallback(() => {
     // Stop processor
@@ -148,6 +186,9 @@ export function AudioRecorder({
     onStop();
   }, [onStop]);
 
+  const stopRecordingRef = useRef<(() => void) | null>(null);
+  stopRecordingRef.current = stopRecording;
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -167,8 +208,29 @@ export function AudioRecorder({
 
   return (
     <div className="flex flex-col items-center gap-4">
+      {enableSystemAudio && (
+        <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+          {([
+            { value: 'system', label: '会議の音声', icon: MonitorSpeaker },
+            { value: 'mic', label: 'マイク', icon: Mic },
+          ] as const).map(({ value, label, icon: Icon }) => (
+            <button
+              key={value}
+              onClick={() => setInputSource(value)}
+              disabled={isRecording}
+              className={`flex items-center gap-1.5 px-3 py-1.5 transition-colors disabled:opacity-50 ${
+                inputSource === value ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Microphone selection (shown only when multiple devices available) */}
-      {audioDevices.length > 1 && (
+      {inputSource === 'mic' && audioDevices.length > 1 && (
         <div className="flex items-center gap-2 w-full max-w-sm">
           <label className="text-xs text-gray-500 whitespace-nowrap">Mic:</label>
           <select

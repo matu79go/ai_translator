@@ -62,6 +62,35 @@ export type TranslationPartialMessage = {
   type: 'translation_partial';
   translation: string;
   source_text: string;
+  /** gx10 meeting mode only: request sequence number / whether it translates a final transcript */
+  seq?: number;
+  is_final?: boolean;
+};
+
+// gx10 meeting mode (docs/designs/meeting-assist-local.md §5.4)
+export type TranslationFinalMessage = {
+  type: 'translation_final';
+  translation: string;
+  source_text: string;
+  seq: number;
+};
+
+export type InsightPartialMessage = {
+  type: 'insight_partial';
+  need: string;
+};
+
+export type AsrChangedMessage = {
+  type: 'asr_changed';
+  engine: 'deepgram' | 'nemotron';
+  ok: boolean;
+};
+
+export type InsightMessage = {
+  type: 'insight';
+  need: string;
+  ready: boolean;
+  replies: string[];
 };
 
 export type SpeculativeTranslationMessage = {
@@ -70,7 +99,8 @@ export type SpeculativeTranslationMessage = {
   source_text: string;
 };
 
-export type WebSocketMessage = TranscriptMessage | StatusMessage | ErrorMessage | IntentMessage | SummaryMessage | HintsMessage | IntentPartialMessage | TranslationPartialMessage | SpeculativeTranslationMessage;
+export type WebSocketMessage = TranscriptMessage | StatusMessage | ErrorMessage | IntentMessage | SummaryMessage | HintsMessage | IntentPartialMessage | TranslationPartialMessage | SpeculativeTranslationMessage
+  | TranslationFinalMessage | InsightPartialMessage | InsightMessage | AsrChangedMessage;
 
 type UseWebSocketOptions = {
   url: string;

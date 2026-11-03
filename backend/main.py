@@ -56,7 +56,7 @@ else:
     gemini_model = None
 
 # LLM model type
-LLMModel = Literal["gpt4", "gpt5", "gemini", "gemma", "groq", "lmstudio"]
+LLMModel = Literal["gpt4", "gpt5", "gemini", "gemma", "groq", "lmstudio", "gx10"]
 
 # Groq model settings (switchable from UI)
 GroqModel = Literal[
@@ -81,6 +81,29 @@ LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
 LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "gemma-3-4b-it")  # Model name loaded in LM Studio
 lmstudio_client = AsyncOpenAI(base_url=LMSTUDIO_BASE_URL, api_key="lm-studio")
 lmstudio_lock = asyncio.Lock()  # Lock to prevent concurrent requests
+
+# GX10 local vLLM (OpenAI-compatible). See docs/designs/meeting-assist-local.md
+# vLLM batches concurrent requests, so translation and insight run in parallel without a lock.
+# GX10_HOST: address of the GX10 box (set in backend/.env; not committed)
+GX10_HOST = os.getenv("GX10_HOST", "localhost")
+GX10_BASE_URL = os.getenv("GX10_BASE_URL", f"http://{GX10_HOST}:8001/v1")
+GX10_MODEL = os.getenv("GX10_MODEL", "gemma4-26b-a4b")
+gx10_client = AsyncOpenAI(base_url=GX10_BASE_URL, api_key="gx10")
+# Nemotron ASR server on GX10 (asr_server/asr_server.py, design §13). Deepgram-like protocol.
+NEMOTRON_ASR_URL = os.getenv("NEMOTRON_ASR_URL", f"ws://{GX10_HOST}:8092/ws")
+ASREngine = Literal["deepgram", "nemotron"]
+INSIGHT_HISTORY_MAX = 30  # utterances of context given to the insight prompt
+# Deepgram finalizes fragments mid-sentence ("...and my task" / "was to source a supplier").
+# In gx10 mode fragments are joined until UtteranceEnd (utterance_end_ms of no words),
+# and the final translation is made for the whole utterance.
+# Speakers who never pause for 1s made utterances grow to the cap, and the partial line kept
+# re-translating the same long text from the start (looked like repeating). So also cut at
+# Deepgram speech_final (short pause) once the utterance has enough words; short fragments
+# like "so" / "and it was" are still joined with the next one.
+UTTERANCE_FLUSH_MIN_WORDS = int(os.getenv("UTTERANCE_FLUSH_MIN_WORDS", "12"))
+UTTERANCE_MAX_WORDS = int(os.getenv("UTTERANCE_MAX_WORDS", "30"))
+# After UtteranceEnd (already 1s without words), wait this long before the insight: ~1.5s total
+GX10_INSIGHT_SILENCE_MS = 500
 
 # Supported languages
 LanguageCode = Literal["en", "ja", "es", "zh"]
@@ -240,6 +263,26 @@ Output JSON format (strict order):
 IMPORTANT: Output ONLY valid JSON, nothing else."""
 
 
+def build_translation_only_prompt(source_lang: str, target_lang: str) -> str:
+    """GX10 meeting mode: plain-text translation. No JSON, so characters stream from the first token."""
+    src = LANG_NAMES.get(source_lang, "English")
+    tgt = LANG_NAMES.get(target_lang, "Japanese")
+    return f"""You are a real-time simultaneous interpreter. Translate the {src} utterance into natural {tgt}.
+- If the utterance is incomplete, still produce a natural {tgt} sentence for what has been said so far.
+- Use the previous utterances only as context; translate only the current utterance.
+- Output ONLY the {tgt} translation. One version only. No quotes, no notes, no alternatives."""
+
+
+def build_insight_prompt() -> str:
+    """GX10 meeting mode: the other party's underlying need + replies. Need comes first so it streams early."""
+    return """あなたはオンライン会議で日本人ユーザーを支える会話アシスタントです。
+相手（英語話者）の発言の流れから、相手が本当に求めているもの（本音）を読み取ってください。
+- need: 相手の本音を日本語で1文、30字以内。表面の発言の言い換えではなく、裏にある欲求・懸念を書く
+- ready: 相手がまだ前置きの段階で本題が見えなければ false
+- replies: 本音に応える、相手の心に刺さる返事を2つ。ユーザーがそのまま言える自然な日本語の口語、各40字以内
+JSONのみ、この順で: {"need":"...","ready":true,"replies":["...","..."]}"""
+
+
 def build_summary_prompt(target_lang: str) -> str:
     """Summary prompt in target language"""
     tgt = LANG_NAMES.get(target_lang, "Japanese")
@@ -299,20 +342,50 @@ class SummaryGenerator:
         self.pending_summary_task: Optional[asyncio.Task] = None
         self.last_summary_hash = ""
 
-    def add_transcript(self, text: str):
-        """Add finalized transcript"""
+    def add_transcript(self, text: str, start_timer: bool = True):
+        """Add finalized transcript. start_timer=False only records it (gx10: utterance cut at
+        a short pause, the turn is not over)."""
         self.transcript_history.append(text)
+        if not start_timer:
+            return
 
         if self.pending_summary_task and not self.pending_summary_task.done():
             self.pending_summary_task.cancel()
 
+        self._waiting_silence = True
         self.pending_summary_task = asyncio.create_task(
             self._delayed_summary()
         )
 
+    def restart_silence_timer(self):
+        if self.pending_summary_task and not self.pending_summary_task.done():
+            self.pending_summary_task.cancel()
+        self._waiting_silence = True
+        self.pending_summary_task = asyncio.create_task(self._delayed_summary())
+
+    def on_speech_activity(self):
+        """A transcript arrived: the speaker is still talking, so cancel the waiting silence timer.
+
+        Only in gx10 mode, where the timer marks the end of the other party's turn. Without
+        this, the insight fires mid-turn. Only a timer that is still waiting is cancelled;
+        a generation already running is left alone.
+        """
+        if self.model != "gx10" or not getattr(self, "_waiting_silence", False):
+            return
+        # The speaker resumed: the turn is not over. The timer starts again at the next
+        # utterance end (TranscriptionManager._flush_utterance -> add_transcript).
+        if self.pending_summary_task and not self.pending_summary_task.done():
+            self.pending_summary_task.cancel()
+        self._waiting_silence = False
+
     async def _delayed_summary(self):
         """Generate summary after silence"""
         await asyncio.sleep(self.silence_threshold_ms / 1000)
+        self._waiting_silence = False  # not reached if cancelled
+
+        if self.model == "gx10":
+            await self._generate_insight_gx10()
+            return
 
         if len(self.transcript_history) >= 2:
             if self.model == "gemini":
@@ -455,6 +528,52 @@ class SummaryGenerator:
             except Exception as e:
                 print(f"[Summary LMStudio] Error: {type(e).__name__}: {e}")
 
+    async def _generate_insight_gx10(self):
+        """Meeting mode: after a turn ends (silence), stream the other party's need, then reply ideas."""
+        if not self.transcript_history:
+            return
+        history = self.transcript_history[-INSIGHT_HISTORY_MAX:]
+        current_hash = hash(tuple(history))
+        if current_hash == self.last_summary_hash:
+            return
+        self.last_summary_hash = current_hash
+
+        conversation = "\n".join(f"相手: {t}" for t in history)
+        start = time.time()
+        print(f"[Insight GX10] Start for {len(history)} utterances", flush=True)
+        out = ""
+        sent_need = False
+        try:
+            stream = await gx10_client.chat.completions.create(
+                model=GX10_MODEL, temperature=0.5, max_tokens=300, stream=True,
+                response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": build_insight_prompt()},
+                          {"role": "user", "content": "会話の流れ:\n" + conversation}],
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if not delta:
+                    continue
+                out += delta
+                if not sent_need:
+                    m = re.search(r'"need"\s*:\s*"([^"]+)"', out)
+                    if m:
+                        sent_need = True
+                        print(f"[Insight GX10] @{(time.time() - start)*1000:.0f}ms NEED: {m.group(1)}", flush=True)
+                        await self.websocket.send_json({"type": "insight_partial", "need": m.group(1)})
+            data = json.loads(out[out.find("{"):out.rfind("}") + 1])
+            print(f"[Insight GX10] Complete in {(time.time() - start)*1000:.0f}ms ready={data.get('ready')}", flush=True)
+            await self.websocket.send_json({
+                "type": "insight",
+                "need": data.get("need", ""),
+                "ready": bool(data.get("ready", True)),
+                "replies": [r for r in data.get("replies", []) if isinstance(r, str)],
+            })
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[Insight GX10] Error: {type(e).__name__}: {e} | {out[:100]}", flush=True)
+
     async def _generate_summary_gemini(self):
         """Generate summary via Gemini"""
         if not gemini_model:
@@ -534,7 +653,9 @@ class IntentEstimator:
         if not text.strip():
             return
 
-        if text == self.last_text:
+        # A final identical to the last interim must still be processed: it is the
+        # only request that produces the final translation.
+        if text == self.last_text and not is_final:
             return
 
         self.last_text = text
@@ -542,6 +663,10 @@ class IntentEstimator:
         word_count = len(text.split())
 
         if is_final:
+            # A debounced partial still waiting would run after this final and re-show
+            # the same sentence as an in-progress line.
+            if self.pending_task and not self.pending_task.done():
+                self.pending_task.cancel()
             self.context_history.append(text)
             if len(self.context_history) > 5:
                 self.context_history.pop(0)
@@ -584,6 +709,8 @@ class IntentEstimator:
             await self._call_gemma(text, is_final)
         elif self.model == "lmstudio":
             await self._call_lmstudio(text, is_final)
+        elif self.model == "gx10":
+            await self._call_gx10(text, is_final)
         elif self.model == "groq":
             await self._call_groq(text, is_final)
         elif self.model == "gpt5":
@@ -918,6 +1045,66 @@ class IntentEstimator:
             except Exception as e:
                 print(f"[LMStudio] Error: {type(e).__name__}: {e}")
 
+    async def _call_gx10(self, text: str, is_final: bool):
+        """Meeting mode: stream a plain-text translation from GX10.
+
+        Every request gets a sequence number sent with each message. A partial is sent when it
+        finishes, unless a newer translation was already sent (dropping every superseded request
+        would show nothing while someone talks without pause). Final results are always sent.
+        """
+        self.gx10_seq = getattr(self, "gx10_seq", 0) + 1
+        seq = self.gx10_seq
+        self.last_call_time = time.time() * 1000
+        start = time.time()
+
+        # On final, the current text was already appended to context_history by estimate().
+        history = self.context_history[:-1] if is_final else self.context_history
+        context = ("Previous utterances:\n" + "\n".join(history[-3:]) + "\n\n") if history else ""
+        user_prompt = f"{context}Current utterance ({'final' if is_final else 'in progress'}):\n{text}"
+        print(f"[GX10] #{seq} start [{'FINAL' if is_final else 'PARTIAL'}]: {text[:40]}", flush=True)
+
+        out = ""
+        try:
+            stream = await gx10_client.chat.completions.create(
+                model=GX10_MODEL, temperature=0.3, max_tokens=300, stream=True,
+                messages=[{"role": "system", "content": build_translation_only_prompt(self.source_lang, self.target_lang)},
+                          {"role": "user", "content": user_prompt}],
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if not delta:
+                    continue
+                if not out:
+                    print(f"[GX10] #{seq} @{(time.time() - start)*1000:.0f}ms first chars", flush=True)
+                out += delta
+                if not is_final and seq < getattr(self, "gx10_sent_seq", 0):
+                    print(f"[GX10] #{seq} superseded, dropping", flush=True)
+                    return
+            print(f"[GX10] #{seq} @{(time.time() - start)*1000:.0f}ms done: {out.strip()[:40]}", flush=True)
+            # Send only the finished translation. Streaming token by token restarted the
+            # displayed line from the first character on every new request (0.3-0.5s apart),
+            # so it kept vanishing and reappearing. One translation takes ~0.3-0.8s.
+            if not is_final:
+                if seq > getattr(self, "gx10_sent_seq", 0):
+                    self.gx10_sent_seq = seq
+                    await self.websocket.send_json({
+                        "type": "translation_partial",
+                        "translation": out.strip(),
+                        "source_text": text,
+                        "seq": seq,
+                        "is_final": False,
+                    })
+            else:
+                self.gx10_sent_seq = max(getattr(self, "gx10_sent_seq", 0), seq)
+                await self.websocket.send_json({
+                    "type": "translation_final",
+                    "translation": out.strip(),
+                    "source_text": text,
+                    "seq": seq,
+                })
+        except Exception as e:
+            print(f"[GX10] #{seq} Error: {type(e).__name__}: {e}", flush=True)
+
     async def _call_groq(self, text: str, is_final: bool):
         """Groq API streaming (ultra-fast)"""
         if not groq_client:
@@ -1057,12 +1244,35 @@ class IntentEstimator:
             print(f"[{provider}] Failed to parse: {full_response[:100]}")
 
 
+class _AsrAlternative:
+    def __init__(self, transcript: str):
+        self.transcript = transcript
+        self.confidence = 1.0
+
+
+class _AsrChannel:
+    def __init__(self, transcript: str):
+        self.alternatives = [_AsrAlternative(transcript)]
+
+
+class AsrResult:
+    """Nemotron server result shaped like a Deepgram LiveResultResponse (what _on_transcript reads)."""
+
+    def __init__(self, msg: dict):
+        self.channel = _AsrChannel(msg.get("transcript", ""))
+        self.is_final = bool(msg.get("is_final"))
+        self.speech_final = bool(msg.get("speech_final"))
+
+
 class TranscriptionManager:
-    """Manages streaming connection with Deepgram"""
+    """Manages the streaming ASR connection (Deepgram, or Nemotron on GX10)"""
 
     def __init__(self, websocket: WebSocket, source_lang: LanguageCode = "en",
-                 target_lang: LanguageCode = "ja"):
+                 target_lang: LanguageCode = "ja", asr_engine: ASREngine = "deepgram"):
         self.websocket = websocket
+        self.asr_engine: ASREngine = asr_engine
+        self.nm_ws = None              # websocket to the Nemotron ASR server
+        self.nm_task: Optional[asyncio.Task] = None
         self.source_lang = source_lang
         self.target_lang = target_lang
         self.dg_connection = None
@@ -1075,6 +1285,47 @@ class TranscriptionManager:
             websocket, target_lang=target_lang
         )
         self.keyword_predictor = KeywordPredictor(websocket)
+        self.utterance_fragments: list[str] = []  # gx10: finalized fragments of the current utterance
+        self._flush_fallback: Optional[asyncio.Task] = None
+
+    def _gx10(self) -> bool:
+        return self.intent_estimator.model == "gx10"
+
+    def _schedule_flush_fallback(self):
+        """gx10: if a final arrives after UtteranceEnd (or UtteranceEnd never comes), flush anyway."""
+        if self._flush_fallback and not self._flush_fallback.done():
+            self._flush_fallback.cancel()
+
+        async def fallback():
+            await asyncio.sleep(1.5)
+            await self._flush_utterance("fallback")
+        self._flush_fallback = asyncio.create_task(fallback())
+
+    async def _flush_utterance(self, reason: str):
+        """gx10: the utterance ended -> final translation of the joined fragments, add to insight history."""
+        if self._flush_fallback and not self._flush_fallback.done() and reason != "fallback":
+            self._flush_fallback.cancel()
+        if not self.utterance_fragments:
+            return
+        utterance = " ".join(self.utterance_fragments)
+        self.utterance_fragments = []
+        print(f"[Utterance] flush ({reason}): {utterance[:60]}", flush=True)
+        asyncio.create_task(self.intent_estimator.estimate(utterance, True))
+        # Only a real pause (UtteranceEnd = 1s without words, or the fallback) may end the turn;
+        # cuts at speech_final / max words just record the utterance.
+        turn_may_end = reason in ("UtteranceEnd", "fallback")
+        self.summary_generator.add_transcript(utterance, start_timer=turn_may_end)
+
+    async def _on_utterance_end(self, *args, **kwargs):
+        if self._gx10():
+            try:
+                if self.utterance_fragments:
+                    await self._flush_utterance("UtteranceEnd")
+                elif self.summary_generator.transcript_history:
+                    # Utterance was already cut at speech_final; the 1s pause still ends the turn.
+                    self.summary_generator.restart_silence_timer()
+            except Exception as e:
+                print(f"UtteranceEnd processing error: {e}")
 
     def set_mode(self, is_final_only: bool):
         """Switch translation mode"""
@@ -1092,6 +1343,8 @@ class TranscriptionManager:
         Returns: True for local LLMs (to notify forced FINAL_ONLY mode)"""
         self.intent_estimator.model = model
         self.summary_generator.model = model
+        if model == "gx10":
+            self.summary_generator.silence_threshold_ms = GX10_INSIGHT_SILENCE_MS
         print(f"[Model] Switched to {model.upper()} (intent + summary)", flush=True)
 
         # LM Studio forces FINAL_ONLY mode (to prevent VRAM overload)
@@ -1126,6 +1379,66 @@ class TranscriptionManager:
         return True
 
     async def start(self):
+        self.session_started = True  # the client is streaming audio; set_asr must (re)start the engine
+        if self.asr_engine == "nemotron":
+            return await self._start_nemotron()
+        return await self._start_deepgram()
+
+    async def set_asr(self, engine: ASREngine) -> bool:
+        """Switch ASR engine; reconnects if running. Returns False if the switch failed."""
+        if engine == "nemotron" and self.source_lang != "en":
+            await self.websocket.send_json({"type": "error", "message": "Nemotron ASR は英語のみです"})
+            return False
+        if engine == self.asr_engine:
+            return True
+        print(f"[ASR] Switching {self.asr_engine} -> {engine}", flush=True)
+        if self.is_running:
+            await self.close()
+        self.asr_engine = engine
+        return await self.start() if getattr(self, "session_started", False) else True
+
+    async def _start_nemotron(self):
+        import websockets  # uvicorn[standard] dependency
+        try:
+            self.nm_ws = await asyncio.wait_for(
+                websockets.connect(NEMOTRON_ASR_URL, max_size=None, ping_interval=20), timeout=5)
+            ready = json.loads(await asyncio.wait_for(self.nm_ws.recv(), timeout=5))
+            if ready.get("type") != "Ready":
+                raise RuntimeError(f"unexpected first message: {ready}")
+        except Exception as e:
+            print(f"[Nemotron] connect failed: {type(e).__name__}: {e}", flush=True)
+            await self.websocket.send_json({
+                "type": "error",
+                "message": f"Nemotron ASR (GX10) に接続できません: {NEMOTRON_ASR_URL} ({type(e).__name__})",
+            })
+            self.nm_ws = None
+            return False
+        self.is_running = True
+        self.nm_task = asyncio.create_task(self._nemotron_receive(self.nm_ws))
+        print(f"[Nemotron] connected {NEMOTRON_ASR_URL}", flush=True)
+        await self.websocket.send_json({"type": "status", "message": "Connected - Nemotron ASR (GX10)"})
+        return True
+
+    async def _nemotron_receive(self, ws):
+        try:
+            async for raw in ws:
+                msg = json.loads(raw)
+                if msg.get("type") == "Results":
+                    await self._on_transcript(result=AsrResult(msg))
+                elif msg.get("type") == "UtteranceEnd":
+                    await self._on_utterance_end()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[Nemotron] receive error: {type(e).__name__}: {e}", flush=True)
+        if self.is_running and self.asr_engine == "nemotron" and self.nm_ws is ws:
+            self.is_running = False
+            try:
+                await self.websocket.send_json({"type": "error", "message": "Nemotron ASR (GX10) との接続が切れました"})
+            except Exception:
+                pass
+
+    async def _start_deepgram(self):
         if not DEEPGRAM_API_KEY:
             await self.websocket.send_json({
                 "type": "error",
@@ -1142,6 +1455,7 @@ class TranscriptionManager:
             self.dg_connection.on(LiveTranscriptionEvents.Transcript, self._on_transcript)
             self.dg_connection.on(LiveTranscriptionEvents.Error, self._on_error)
             self.dg_connection.on(LiveTranscriptionEvents.Close, self._on_close)
+            self.dg_connection.on(LiveTranscriptionEvents.UtteranceEnd, self._on_utterance_end)
 
             dg_lang = DEEPGRAM_LANG_MAP.get(self.source_lang, "en-US")
             print(f"[Deepgram] Starting with language: {dg_lang}", flush=True)
@@ -1202,12 +1516,36 @@ class TranscriptionManager:
                     # Send keyword hints immediately (lightweight, synchronous)
                     await self.keyword_predictor.predict(transcript)
 
+                    if self._gx10():
+                        # Join finalized fragments; translate "fragments so far + interim" as a partial.
+                        if is_final:
+                            self.utterance_fragments.append(transcript)
+                            joined = " ".join(self.utterance_fragments)
+                            self.summary_generator.on_speech_activity()
+                            self._schedule_flush_fallback()
+                            n_words = len(joined.split())
+                            if n_words >= UTTERANCE_MAX_WORDS:
+                                await self._flush_utterance("max words")
+                            elif speech_final and n_words >= UTTERANCE_FLUSH_MIN_WORDS:
+                                await self._flush_utterance("speech_final")
+                            else:
+                                asyncio.create_task(self.intent_estimator.estimate(joined, False))
+                        else:
+                            joined = " ".join(self.utterance_fragments + [transcript])
+                            asyncio.create_task(self.intent_estimator.estimate(joined, False))
+                            self.summary_generator.on_speech_activity()
+                            if self._flush_fallback and not self._flush_fallback.done():
+                                self._flush_fallback.cancel()  # still talking
+                        return
+
                     # Run intent estimation non-blocking (don't block Deepgram keepalive)
                     asyncio.create_task(self.intent_estimator.estimate(transcript, is_final))
 
                     # Add finalized transcript for summary generation
                     if is_final:
                         self.summary_generator.add_transcript(transcript)
+                    else:
+                        self.summary_generator.on_speech_activity()
 
             except Exception as e:
                 print(f"Transcript processing error: {e}")
@@ -1228,13 +1566,33 @@ class TranscriptionManager:
         print("Deepgram connection closed")
 
     async def send_audio(self, audio_data: bytes):
-        if self.dg_connection and self.is_running:
+        if not self.is_running:
+            return
+        if self.asr_engine == "nemotron":
+            if self.nm_ws:
+                try:
+                    await self.nm_ws.send(audio_data)
+                except Exception as e:
+                    print(f"[Nemotron] send error: {type(e).__name__}: {e}", flush=True)
+        elif self.dg_connection:
             await self.dg_connection.send(audio_data)
 
     async def close(self):
         self.is_running = False
-        if self.dg_connection:
+        if self.asr_engine == "nemotron":
+            ws, task = self.nm_ws, self.nm_task
+            self.nm_ws, self.nm_task = None, None
+            if ws:
+                try:
+                    await ws.send(json.dumps({"type": "CloseStream"}))
+                    await ws.close()
+                except Exception:
+                    pass
+            if task:
+                task.cancel()
+        elif self.dg_connection:
             await self.dg_connection.finish()
+            self.dg_connection = None
 
 
 # Path to static files
@@ -1259,7 +1617,8 @@ async def websocket_audio(websocket: WebSocket):
     manager: Optional[TranscriptionManager] = None
 
     try:
-        manager = TranscriptionManager(websocket)
+        asr = websocket.query_params.get("asr", "deepgram")
+        manager = TranscriptionManager(websocket, asr_engine=asr if asr in ("deepgram", "nemotron") else "deepgram")
         if not await manager.start():
             await websocket.close()
             return
@@ -1293,9 +1652,9 @@ async def websocket_audio(websocket: WebSocket):
                         "min_words": min_words
                     })
                 elif msg_type == "set_model":
-                    # LLM model switch: {"type": "set_model", "model": "gpt4" | "gpt5" | "gemini" | "gemma" | "groq" | "lmstudio"}
+                    # LLM model switch: {"type": "set_model", "model": "gpt4" | "gpt5" | "gemini" | "gemma" | "groq" | "lmstudio" | "gx10"}
                     model = message.get("model", "gpt4")
-                    if model in ("gpt4", "gpt5", "gemini", "gemma", "groq", "lmstudio"):
+                    if model in ("gpt4", "gpt5", "gemini", "gemma", "groq", "lmstudio", "gx10"):
                         forced_final_only = manager.set_model(model)
                         await websocket.send_json({
                             "type": "model_changed",
@@ -1335,6 +1694,12 @@ async def websocket_audio(websocket: WebSocket):
                         "type": "experimental_changed",
                         "enabled": enabled
                     })
+                elif msg_type == "set_asr":
+                    # ASR switch: {"type": "set_asr", "engine": "deepgram" | "nemotron"}
+                    engine = message.get("engine")
+                    if engine in ("deepgram", "nemotron"):
+                        ok = await manager.set_asr(engine)
+                        await websocket.send_json({"type": "asr_changed", "engine": manager.asr_engine, "ok": ok})
                 elif msg_type == "set_languages":
                     # Language switch: {"type": "set_languages", "source": "en", "target": "ja"}
                     source = message.get("source", "en")
