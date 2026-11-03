@@ -16,6 +16,15 @@ export interface AudioRecorderProps {
   onRecordingChange?: (recording: boolean) => void;
 }
 
+/** Phones/tablets: mobile browsers cannot capture system/tab audio (no getDisplayMedia audio). */
+const IS_MOBILE = typeof navigator !== 'undefined'
+  && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+/** Whether "meeting audio" (screen/tab share with audio) can be used in this browser. */
+function supportsSystemAudio(): boolean {
+  return !IS_MOBILE && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+}
+
 /**
  * Capture the audio the PC is playing (= remote meeting participants) via screen sharing.
  * Windows Chrome/Edge: choose "Entire screen" + "Share system audio" (works with desktop Zoom/Teams).
@@ -52,7 +61,8 @@ export function AudioRecorder({
   variant = 'default',
   onRecordingChange,
 }: AudioRecorderProps) {
-  const [inputSource, setInputSource] = useState<AudioSource>(enableSystemAudio ? defaultSource : 'mic');
+  const systemAudioOk = enableSystemAudio && supportsSystemAudio();
+  const [inputSource, setInputSource] = useState<AudioSource>(systemAudioOk ? defaultSource : 'mic');
   const [isRecording, setIsRecording] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +96,8 @@ export function AudioRecorder({
 
   // Get device list when the mic is the input (not on mount for meeting audio: avoids a needless mic prompt)
   useEffect(() => {
-    if (inputSource === 'mic') refreshDevices();
+    // Phones use the default mic: no device list, so no permission prompt until recording starts
+    if (inputSource === 'mic' && !IS_MOBILE) refreshDevices();
   }, [inputSource]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watch for device changes (e.g. Bluetooth connect/disconnect)
@@ -223,7 +234,7 @@ export function AudioRecorder({
           title={isRecording ? '停止' : '開始'}
           aria-label={isRecording ? '停止' : '開始'}
         />
-        {enableSystemAudio && (
+        {systemAudioOk && (
           <div className="seg" title="音声の取り方">
             <span className="k">入力</span>
             {([

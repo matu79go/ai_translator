@@ -440,3 +440,13 @@ Windows の音声合成で作った英語の音声の1つ（`turn.wav`）で、N
   - メッセージ：`story_progress {index, start, n}`（区切りがたまっていく途中）、`story {index, start, n, first, title, summary}`（要約済み）。`start` は開始からの秒、`first` はその区切りの最初の発話（翻訳の `source_text` と同じ文字列）
 - **画面**：PC は右の列に「📖 あらすじ」（時刻・見出し・あらすじ、進行中の区切りは「進行中（n文）…」）。見出しをクリックすると、履歴のその位置へ移動して一瞬ハイライト。スマホは下の欄を「会話 ／ あらすじ」のタブで切り替え
 - 確認：面接音声に4秒の無音を2か所挟んだ113秒の音声で、PC（白・Nemotron）とスマホ（紺・Deepgram）を実際の画面で撮影。どちらも区切り3つがすべて要約され、エラーなし
+
+## 17. GX10 で常時起動、tailnet 内の PC・スマホから使う（2026-11-03）
+
+- URL：`https://<GX10 の Tailscale 名>:10443/#meeting`（tailnet 内のみ。Funnel は使わない）。GX10 の他のサービスと同じく、ホスト名は1つでポート番号で分ける（Tailscale serve ではマシンにサブドメインを増やせない）
+- 構成と手順：`deploy/gx10/README.md`。systemd のユーザーサービス2つ（`ai-translator.service`：uvicorn `127.0.0.1:8100`、ビルド済み画面も配信 / `nemotron-asr.service`：`:8092`）。Linger 有効なので GX10 再起動後も自動起動
+- **Gemma 4（vLLM）は他のサービスと共用なので、ここからは起動・停止しない**（`status.sh` で確認だけ）
+- 更新：master に push してから `bash deploy/gx10/deploy.sh`（GX10 で pull → WSL で画面をビルドしてコピー → サービス再起動 → 状態表示）
+- **スマホはマイク入力のみ**：スマホのブラウザは画面共有の音声に対応していない。スマホで開くと「入力」の切り替えを出さず、マイクを既定にする。ページを開いただけではマイクの許可を求めない
+- **Nemotron の同時接続**：1つのモデルを2つの接続で同時に使うと壊れた（片方が `AttributeError: ... get_audio_features`、もう片方も約5秒で止まる）。接続ごとにモデルを1つ割り当てる形に変更（`--streams 2`、GPU 約5.1GB）。上限を超えた接続には「同時に 2 接続までです」を返し、画面に表示する
+- 確認：Tailscale の URL 経由で、PC（会議の音声・Nemotron）と iPhone 表示（マイク・Nemotron）を**同時に**70秒流し、両方で訳・本音・あらすじが出ることを確認。3つ目の接続は断られることを確認

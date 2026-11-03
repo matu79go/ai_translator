@@ -1,12 +1,12 @@
-/* Meeting assist page (#meeting). Layout = docs/mock/b-subtitle.html (subtitle + history).
+/* Meeting assist page (#meeting). Accent = app brand green (logo). Layout = docs/mock/b-subtitle.html (subtitle + history).
    Scoped to .ma so the other pages are unaffected. Theme: .ma[data-theme="light" | "dark"]. */
 .ma {
   --bg: #f3f5f8; --panel: #ffffff; --panel-2: #f7f9fc; --line: #c5d0dc; --line-soft: #e3e8ee;
   --ink: #17202c; --ink-2: #3b4a5c; --dim: #66768a;
-  --accent: #0a84b8; --accent-soft: rgba(10, 132, 184, .10);
+  --accent: #0f9d6e; --accent-soft: rgba(15, 157, 110, .10);
   --amber: #9a6a00; --amber-soft: #fff6dc; --amber-line: #ecd291;
   --ok: #138a55; --ok-line: #9fd8bd; --rec: #d63447; --err: #c62f40; --err-line: #f0b3ba;
-  --live-bg: #eaf5fb; --live-line: #8cc6e2;
+  --live-bg: #ecfaf3; --live-line: #8fd3b4;
   --sans: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif;
   color-scheme: light;
   height: 100dvh; display: flex; flex-direction: column;
@@ -15,10 +15,10 @@
 .ma[data-theme="dark"] {
   --bg: #070b12; --panel: #0c1420; --panel-2: #0a111b; --line: #1e3a55; --line-soft: #142638;
   --ink: #e2effc; --ink-2: #a9c3dc; --dim: #7090ad;
-  --accent: #37d5ff; --accent-soft: rgba(55, 213, 255, .14);
+  --accent: #34d399; --accent-soft: rgba(52, 211, 153, .14);
   --amber: #ffcf5a; --amber-soft: rgba(255, 207, 90, .10); --amber-line: #5a4a1f;
   --ok: #5dffb0; --ok-line: #1f5a41; --rec: #ff5d6c; --err: #ff5d6c; --err-line: #5a1f2a;
-  --live-bg: #0e2233; --live-line: #2a6d93;
+  --live-bg: #0d2a27; --live-line: #1f7a5c;
   color-scheme: dark;
 }
 .ma button { font: inherit; color: inherit; cursor: pointer; }

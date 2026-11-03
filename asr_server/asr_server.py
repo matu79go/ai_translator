@@ -36,15 +36,20 @@ ap.add_argument("--language", default="en-US")
 ap.add_argument("--final-silence", type=float, default=0.7)
 ap.add_argument("--utterance-end", type=float, default=1.0)
 ap.add_argument("--long-segment-words", type=int, default=25)
+# generate() is not safe to run concurrently on one model instance (a second stream crashed with
+# AttributeError ... get_audio_features and the first one stopped), so each connection gets its own
+# instance. ~2.6 GB of GPU memory per stream.
+ap.add_argument("--streams", type=int, default=2, help="max concurrent streams (model instances)")
 args = ap.parse_args()
 
 MID = "nvidia/nemotron-3.5-asr-streaming-0.6b"
 proc = AutoProcessor.from_pretrained(MID)
 proc.set_num_lookahead_tokens(args.lookahead)
-model = AutoModelForRNNT.from_pretrained(MID, device_map="cuda", dtype=torch.float32).eval()
+MODELS = [AutoModelForRNNT.from_pretrained(MID, device_map="cuda", dtype=torch.float32).eval() for _ in range(args.streams)]
+FREE_MODELS = list(MODELS)  # touched only from the event loop thread
 SR = proc.feature_extractor.sampling_rate
 HOP, NFFT = proc.feature_extractor.hop_length, proc.feature_extractor.n_fft
-print(f"loaded {MID}: chunk {proc.streaming_latency_ms} ms, gpu {torch.cuda.memory_allocated() / 1e9:.2f} GB", flush=True)
+print(f"loaded {MID} x{args.streams}: chunk {proc.streaming_latency_ms} ms, gpu {torch.cuda.memory_allocated() / 1e9:.2f} GB", flush=True)
 
 
 def clean(text: str) -> str:
@@ -99,7 +104,7 @@ class TokenStreamer(BaseStreamer):
         pass
 
 
-def run_generate(audio: AudioQueue, streamer: TokenStreamer):
+def run_generate(model, audio: AudioQueue, streamer: TokenStreamer):
     """Blocking: feed audio chunks to generate() as they arrive (same chunking as nemo_stream.py)."""
     n0 = proc.num_samples_first_audio_chunk
     if not audio.wait_for(n0):
@@ -183,7 +188,13 @@ async def handle(ws):
         return
     loop = asyncio.get_running_loop()
     peer = ws.remote_address
-    print(f"[conn] open {peer}", flush=True)
+    if not FREE_MODELS:
+        print(f"[conn] reject {peer}: all {len(MODELS)} streams busy", flush=True)
+        await ws.send(json.dumps({"type": "Error", "message": f"Nemotron ASR は同時に {len(MODELS)} 接続までです"}))
+        await ws.close(code=1013, reason="busy")
+        return
+    model = FREE_MODELS.pop()
+    print(f"[conn] open {peer} ({len(FREE_MODELS)} free)", flush=True)
 
     async def send(msg):
         try:
@@ -201,7 +212,7 @@ async def handle(ws):
 
     def gen_logged():
         try:
-            run_generate(audio, streamer)
+            run_generate(model, audio, streamer)
         except Exception as e:  # noqa: BLE001
             print(f"[conn] generate error: {type(e).__name__}: {e}", flush=True)
             raise
@@ -235,7 +246,11 @@ async def handle(ws):
         await asyncio.sleep(0.1)
         await ep.finalize()
         tick_task.cancel()
-        print(f"[conn] closed {peer}", flush=True)
+        if gen_task.done():
+            FREE_MODELS.append(model)
+        else:  # generate still running (should not happen after audio.close): don't hand this instance out
+            print(f"[conn] WARNING generate did not finish; instance not reused", flush=True)
+        print(f"[conn] closed {peer} ({len(FREE_MODELS)} free)", flush=True)
 
 
 def warmup():
@@ -243,7 +258,8 @@ def warmup():
     q.push(np.zeros(2 * SR, dtype="<i2").tobytes())
     q.close()
     t = time.monotonic()
-    run_generate(q, TokenStreamer(lambda ids: None))
+    for m in MODELS:
+        run_generate(m, q, TokenStreamer(lambda ids: None))
     print(f"warmup done in {time.monotonic() - t:.1f}s", flush=True)
 
 

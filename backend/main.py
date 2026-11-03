@@ -1504,6 +1504,10 @@ class TranscriptionManager:
             self.nm_ws = await asyncio.wait_for(
                 websockets.connect(NEMOTRON_ASR_URL, max_size=None, ping_interval=20), timeout=5)
             ready = json.loads(await asyncio.wait_for(self.nm_ws.recv(), timeout=5))
+            if ready.get("type") == "Error":  # e.g. all streams busy
+                await self.websocket.send_json({"type": "error", "message": ready.get("message", "Nemotron ASR error")})
+                self.nm_ws = None
+                return False
             if ready.get("type") != "Ready":
                 raise RuntimeError(f"unexpected first message: {ready}")
         except Exception as e:

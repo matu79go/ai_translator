@@ -1,0 +1,14 @@
+[Unit]
+Description=Nemotron 3.5 ASR streaming server for ai_translator (ws :8092, Deepgram-like protocol)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/ai_translator/asr_server
+# 0.0.0.0 so the WSL dev backend can also use it over the LAN
+ExecStart=%h/venvs/nemotron-asr/bin/python asr_server.py --host 0.0.0.0 --port 8092
+Environment=HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

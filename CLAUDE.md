@@ -167,6 +167,11 @@ npm run dev
   ssh gx10 'bash ~/work/nemotron-asr/server/run_server.sh'                          # 停止: ssh gx10 'pkill -f asr_server.py'
   ```
 
+### GX10 で常時起動（tailnet 内の PC・スマホから）
+
+`https://<GX10 の Tailscale 名>:10443/#meeting`。構成・更新・停止は [deploy/gx10/README.md](deploy/gx10/README.md)。
+更新は master に push してから `bash deploy/gx10/deploy.sh`、状態は `bash deploy/gx10/status.sh`。
+
 ### 携帯テスト（ngrok経由）
 
 ngrokを使って外部からアクセス可能にする。**HTTPSが自動提供されるためマイクが使える。**

@@ -212,7 +212,7 @@ export default function MeetingApp() {
   return (
     <div className="ma" data-theme={theme}>
       <div className="bar">
-        <h1>Meeting Assist</h1>
+        <h1>AI Translator</h1>
         <AudioRecorder
           variant="compact"
           isConnected={isConnected}
