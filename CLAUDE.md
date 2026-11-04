@@ -158,7 +158,7 @@ npm run dev
 
 アクセス: http://localhost:5173
 
-- 会議アシスト（GX10 ローカルLLM、翻訳＋相手の本音）: http://localhost:5173/#meeting
+- 会議アシスト（GX10 ローカルLLM、翻訳＋相手の意図）: http://localhost:5173/#meeting
   設計: [docs/designs/meeting-assist-local.md](docs/designs/meeting-assist-local.md)
 - WSL の system Python は FastAPI と Starlette のバージョンが合わず起動しないので、`backend/.venv` を使う
 - 会議アシストで ASR に Nemotron（GX10）を使う場合は、GX10 で ASR サーバーを起動しておく（画面のトグルで Deepgram と切り替え）:

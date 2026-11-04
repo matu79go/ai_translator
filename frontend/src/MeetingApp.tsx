@@ -254,7 +254,7 @@ export default function MeetingApp() {
         <button className="icon" onClick={clearAll} title="クリア" aria-label="クリア">⌫</button>
         {isMiniWindowSupported() && (
           <button className={`icon${mini.win ? ' on' : ''}`} onClick={mini.win ? mini.close : mini.open}
-            title={mini.win ? '小窓を閉じる' : '字幕と本音を、いつも最前面の小窓に出す'} aria-label="小窓">⧉</button>
+            title={mini.win ? '小窓を閉じる' : '字幕と意図を、いつも最前面の小窓に出す'} aria-label="小窓">⧉</button>
         )}
       </div>
 
@@ -273,11 +273,11 @@ export default function MeetingApp() {
 
         <aside className={`panel ins${insOpen ? ' open' : ''}${insFresh ? ' fresh' : ''}`}>
           <div className="ins-body">
-            {!insight && <p className="thinking">💡 相手が話し終えると、ここに相手の本音と返事の案が出ます</p>}
+            {!insight && <p className="thinking">💡 相手が話し終えると、ここに相手の意図と返事の案が出ます</p>}
             {insight && (
               <>
                 <div className="lead">
-                  <div className="situation">💡 相手の本音{insight.situation && ` · 相手は${insight.situation}`}</div>
+                  <div className="situation">💡 相手の意図{insight.situation && ` · 相手は${insight.situation}`}</div>
                   <div className={`need${insight.ready ? '' : ' not-ready'}`}>
                     {insight.need}
                     {!insight.ready && <div className="thinking">（まだ前置きの段階かもしれません）</div>}
@@ -386,7 +386,7 @@ function MiniView({ theme, now, recording, insight, insFresh, history, turnEnds,
       </section>
       <div className={`mini-need${insFresh ? ' fresh' : ''}${insight && !insight.ready ? ' not-ready' : ''}`}
         title={insight?.need}>
-        💡 {insight ? insight.need : '相手が話し終えると、ここに本音が出ます'}
+        💡 {insight ? insight.need : '相手が話し終えると、ここに意図が出ます'}
       </div>
 
       <section className="panel mini-more">
