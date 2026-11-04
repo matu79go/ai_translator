@@ -1,6 +1,6 @@
 # 仕様書：AI Translator — オンライン会議アシスト（ローカルLLM版）
 
-- 状態：**稼働中**（GX10 で常時起動。2026-11-03 時点の仕様）
+- 状態：**稼働中**（GX10 で常時起動。2026-11-04 時点の仕様、v2.0.0 として GitHub で公開）
 - 開発の経緯・計測の詳細・不具合と修正の記録：[meeting-assist-local-history.md](meeting-assist-local-history.md)（以下「経緯」）
 - 運用手順：[deploy/gx10/README.md](../../deploy/gx10/README.md)
 - 画面の比較案（採用は案B）：[docs/mock/](../mock/index.html)
@@ -169,6 +169,7 @@ ASR の確定結果は文の途中で切れることがある（"…and my task"
 - **小窓**（⧉、PC の Chrome / Edge のみ。`frontend/src/hooks/useMiniWindow.ts`、`components/MiniWindow.tsx`）：Document Picture-in-Picture で、いつも最前面の小さなウィンドウ（約 520×170）を開く。会議アプリの上に重ねて使う
   - 中身：状態・いまの訳（長いときは新しい方を見せる）・💡 意図1行。データと録音は元の画面のまま（React の portal で描くだけ）
   - 高さ **300px 以上** にのばすと、「会話 ／ あらすじ」のタブが下に出る（会話は日本語だけ、新しい順。見出しを押すとその行へ移動）
+  - 訳が小窓に収まらないときは新しい方を見せ、上の端で切れた行は薄くぼかす（`mask-image`）
   - 対応していないブラウザ（スマホなど）ではボタンを出さない
 - 「?」に手順の説明と「従来の画面へ」。旧画面（`ExperimentalApp`）は `/` のまま残している
 
