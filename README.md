@@ -1,168 +1,159 @@
-# Intent-First Translation
+# AI Translator — fully local real-time meeting translation
 
-A real-time speech translation prototype that shows **speculative translations before the speaker finishes talking**, powered by LLM intent estimation.
+Live Japanese subtitles for English online meetings, plus the speaker's intent, reply ideas, and a running synopsis. **Speech recognition and the LLM both run on your own GPU machine.** No cloud API is required, and meeting audio and text never leave your network.
 
-![Demo](docs/screenshot.gif)
+Built only on open models:
 
-Traditional translation tools wait for a complete sentence before translating. This project takes a different approach: it analyzes the speaker's **intent** (dialogue act + intent label) from partial speech and generates a speculative translation immediately, then refines it once the sentence is finalized. This reduces perceived latency by ~500ms-1s.
+- **Speech recognition:** [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) (OpenMDW-1.1)
+- **Translation, intent, synopsis:** [Google Gemma 4 26B-A4B](https://huggingface.co/google/gemma-4-26B-A4B-it) (Apache 2.0) on vLLM
 
-## How It Works
+![Mini window over a NASA press conference](docs/images/demo.gif)
 
-1. **Speech capture** -- Browser microphone captures audio via MediaDevices API
-2. **Real-time ASR** -- Audio streams to Deepgram for partial + final transcriptions
-3. **Intent estimation** -- Each transcript update is sent to an LLM, which outputs:
-   - `dialogue_act` (Question, Proposal, Agreement, etc.)
-   - `intent_label` (short description of what the speaker intends)
-   - `speculative_translation` (fast, based on intent alone)
-   - `full_translation` (accurate, based on complete analysis)
-4. **Live UI update** -- The speculative translation appears first, then gets replaced by the final translation
+*The always-on-top mini window translating a NASA press conference (Artemis II, 2026-04-16; NASA footage). The audio was streamed in real time through the local pipeline, and the actual output was overlaid on the video.*
 
-## Supported Languages
+## Features
 
-All combinations of the following 4 languages are supported for bidirectional translation:
+| Feature | What it does | Speed (measured) |
+|---|---|---|
+| **Real-time translation** | Translates the other speaker into Japanese while they are still talking | First token in ~0.1 s, full line in ~0.4 s |
+| **Speaker intent + reply ideas** | When the other speaker finishes, shows their stance, what they want, and two replies you could give | ~2 s after they stop |
+| **Synopsis** | Summarizes the conversation section by section | ~2 s per section |
+| **Mini window** | One click opens an always-on-top window with just the subtitle and intent, over Zoom / Teams / Meet. Make it taller to see the history and synopsis | — |
 
-| Language | Speech Input (ASR) | Translation Output | TTS Output |
-|----------|-------------------|-------------------|------------|
-| English  | Deepgram `en-US`  | Yes               | `en-US`    |
-| Japanese | Deepgram `ja`     | Yes               | `ja-JP`    |
-| Spanish  | Deepgram `es`     | Yes               | `es-ES`    |
-| Chinese  | Deepgram `zh`     | Yes               | `zh-CN`    |
+- **Meeting audio on a PC:** captured as system audio through the browser's screen-share dialog (Chrome / Edge on Windows). Works with the desktop Zoom and Teams apps. Meeting apps do not play your own voice through the speakers, so only the other side is captured.
+- **Phone:** microphone input.
+- **ASR switch:** Nemotron (local) or Deepgram (cloud, optional), switchable during recording.
 
-This means 12 translation directions are available (e.g., English to Japanese, Japanese to English, Spanish to Chinese, etc.).
+![Meeting screen](docs/images/meeting-screen.png)
 
-### Switching Languages
+## Why fully local
 
-Use the language dropdowns at the top of the page:
+| | Cloud APIs | This project |
+|---|---|---|
+| Meeting audio and content | Sent to an external server | Stays on your machine |
+| Cost | Billed per minute or per token | Nothing per use |
+| Latency | Round trip to a remote server | Word latency about half of Deepgram (0.29 s vs 0.64 s median) |
+| Availability | Subject to pricing changes, rate limits, outages | Models are stored locally |
+| Customization | Fixed models and settings | Prompts, chunking, and models are all yours to change |
+| Setup | Accounts and API keys | None. Download the models once |
 
-- **Left dropdown** -- Source language (what you speak)
-- **Right dropdown** -- Target language (translation output)
-- **Swap button** (⇄) -- Quickly swap source and target
+## Architecture
 
-Changing the source language will automatically restart the speech recognition engine with the correct language model. You can switch languages while recording is stopped.
+![Architecture](docs/images/architecture.png)
 
-## Tech Stack
+- The **browser** streams 16 kHz PCM over a WebSocket and receives translations, intents, and synopses.
+- The **backend** (FastAPI) joins ASR fragments into utterances, detects the end of the other speaker's turn, and sends three kinds of requests to the same Gemma 4 model in parallel. vLLM batches them, so translation slows down by only tens of milliseconds.
+- **Translation is plain text, not JSON.** With the translation inside a JSON object, the first translated token took ~2.3 s because the model had to write the other fields first. As plain text it takes ~0.1 s.
+- **`asr_server/`** wraps Nemotron ASR in a Deepgram-compatible WebSocket protocol. Nemotron has no finality signal, so the server marks a segment final after 0.7 s without new words and sends `UtteranceEnd` after 1 s.
 
-### Backend
-- **Python 3.10+**
-- **FastAPI 0.115** + **WebSockets 14.1** -- Async API server
-- **Deepgram SDK 3.10** -- Streaming speech-to-text with partial results
-- **OpenAI SDK 1.58** (GPT-4o-mini) -- Primary LLM for intent estimation and translation
-- **Google Generative AI SDK 0.8+** (Gemini 2.5 Flash) -- Optional alternative LLM
-- **Groq API** (via OpenAI SDK) -- Optional ultra-fast inference with Llama models
-- **Ollama / LM Studio** (via OpenAI-compatible API) -- Optional local LLM support
-- **Uvicorn 0.34** -- ASGI server
+## Performance
 
-### Frontend
-- **React 19.2** with **TypeScript 5.9**
-- **Vite 5.4** -- Build tool and dev server
-- **Tailwind CSS 3.4** -- Styling
-- **Lucide React 0.562** -- Icons
-- **React Router DOM 6.30** -- Routing
-- **Web Speech API** -- Browser-native TTS for translated text
+Measured on one ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory), November 2026.
+
+| Metric | Result |
+|---|---|
+| Translation: first token / full line (LLM only) | ~0.1 s / ~0.4 s |
+| Translation: ASR final → final translation (NASA press conference, 157 s, Nemotron) | median 0.74 s, p90 1.26 s |
+| Intent: request → intent / two replies (LLM only) | ~0.6 s / ~1.6 s |
+| ASR word latency, median (AMI meeting corpus) | Nemotron 0.29 s, Deepgram 0.64 s |
+| ASR word error rate (AMI, fillers removed) | Nemotron 32.5%, Deepgram 27.8% |
+| ASR word error rate (LibriSpeech) | Nemotron 6.7%, Deepgram 6.7–7.1% |
+| GPU memory for Nemotron | ~2.6 GB per concurrent stream |
+
+## Requirements
+
+- An NVIDIA GPU machine that can serve **Gemma 4 26B-A4B (FP8)** with vLLM. The FP8 weights alone are about 26 GB, plus KV cache. Tested only on ASUS Ascent GX10 (aarch64, CUDA 13).
+- Python 3.10+ for the backend, Python 3.12 for the ASR server, Node.js 18+ to build the frontend.
+- Chrome or Edge on the PC (system audio capture and the mini window). The mini window uses Document Picture-in-Picture and is not available on phones.
+- Optional: a Deepgram API key, only if you want to use Deepgram instead of Nemotron.
 
 ## Setup
 
-### Prerequisites
+The commands below assume the GPU machine also runs the backend. The backend can run elsewhere as long as it can reach the GPU machine.
 
-- Node.js 18+
-- Python 3.10+
-- API keys for Deepgram and at least one LLM provider
-
-### 1. Clone the repository
+### 1. Gemma 4 on vLLM (GPU machine)
 
 ```bash
-git clone <repository-url>
-cd ai_translator
+docker run -d --gpus all --ipc host -p 8001:8000 --name vllm-gemma4 \
+  vllm/vllm-openai:latest \
+  RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic \
+  --served-model-name gemma4-26b-a4b --max-model-len 32768 --gpu-memory-utilization 0.70
 ```
 
-### 2. Backend setup
+Use the vLLM image that matches your CUDA version and CPU architecture.
+
+### 2. Nemotron ASR server (GPU machine)
+
+```bash
+python3.12 -m venv ~/venvs/nemotron-asr
+~/venvs/nemotron-asr/bin/pip install torch --index-url https://download.pytorch.org/whl/cu130   # match your CUDA
+~/venvs/nemotron-asr/bin/pip install "transformers>=5.13" numpy soundfile accelerate librosa websockets
+~/venvs/nemotron-asr/bin/hf download nvidia/nemotron-3.5-asr-streaming-0.6b --include "*.json" model.safetensors
+
+~/venvs/nemotron-asr/bin/python asr_server/asr_server.py --port 8092 --streams 2
+```
+
+`--streams` is the number of concurrent connections (one model instance each, ~2.6 GB of GPU memory per stream). Loading and warm-up take about 35 seconds.
+
+### 3. Backend
 
 ```bash
 cd backend
-pip install -r requirements.txt
-cp .env.example .env
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env      # set GX10_HOST to the GPU machine's address (127.0.0.1 if it is this machine)
+.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Edit `backend/.env` with your API keys:
+The `GX10_*` variable names come from the machine the project was built on. They work for any GPU machine:
 
-```env
-DEEPGRAM_API_KEY=your_deepgram_key      # Required
-OPENAI_API_KEY=your_openai_key          # Required for GPT-4
-GOOGLE_API_KEY=your_google_key          # Optional, for Gemini
-GROQ_API_KEY=your_groq_key             # Optional, for Groq
-```
+| Variable | Default | Meaning |
+|---|---|---|
+| `GX10_HOST` | `localhost` | Address of the GPU machine |
+| `GX10_BASE_URL` | `http://<GX10_HOST>:8001/v1` | vLLM OpenAI-compatible endpoint |
+| `GX10_MODEL` | `gemma4-26b-a4b` | `--served-model-name` in vLLM |
+| `NEMOTRON_ASR_URL` | `ws://<GX10_HOST>:8092/ws` | Nemotron ASR server |
+| `DEEPGRAM_API_KEY` | — | Only if you use Deepgram |
 
-### 3. Frontend setup
+### 4. Frontend
 
 ```bash
 cd frontend
 npm install
+npm run build     # the backend serves frontend/dist
 ```
 
-## Running
+For development, run `npm run dev` and open `http://localhost:5173/#meeting`.
 
-Start both servers in separate terminals:
+### 5. Open it
 
-```bash
-# Terminal 1: Backend (port 8000)
-cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-
-# Terminal 2: Frontend dev server (port 5173)
-cd frontend
-npm run dev
-```
-
-Open http://localhost:5173 in your browser.
-
-### Mobile Testing (via ngrok)
-
-To test on a mobile device (HTTPS required for microphone access):
-
-```bash
-# 1. Build the frontend
-cd frontend && npm run build
-
-# 2. Start the backend (serves built frontend too)
-cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-
-# 3. In another terminal, start ngrok
-ngrok http 8000
-```
-
-Open the ngrok URL on your mobile browser.
+Open `http://<backend>:8000/#meeting`. Browsers allow microphone and screen-audio capture only on `localhost` or HTTPS, so use HTTPS when you open it from another device. We serve it inside a private network with `tailscale serve --https=10443 http://127.0.0.1:8000`. An always-on setup with systemd is in [`deploy/gx10/`](deploy/gx10/README.md) (Japanese).
 
 ## Usage
 
-1. Select your **source language** (the language you will speak) and **target language** (translation output)
-2. Choose an **LLM model** (GPT-4 is the default and recommended)
-3. Click the **microphone button** to start recording
-4. Speak -- you'll see:
-   - Real-time transcript of your speech
-   - Speculative translation (appears fast, may be approximate)
-   - Final translation (appears after sentence is complete, more accurate)
-5. Click the microphone button again to stop
+1. Choose the input: **会議の音声** (meeting audio) or **マイク** (microphone).
+2. Choose the ASR: **Nemotron** (local) or **Deepgram** (cloud).
+3. Press **●**. For meeting audio, pick **Entire screen** and turn on **Share system audio** in the browser dialog.
+4. Press **⧉** to open the mini window. Drag it over your meeting app. Make it taller than 300 px to show the conversation history and synopsis tabs.
 
-### Display Modes
+The UI is in Japanese. Source language is English and the target is Japanese.
 
-- **Side by Side** -- Shows speculative and final translations next to each other for comparison
-- **Overwrite** -- Shows only one translation at a time; speculative is replaced by final when ready
+## Limitations
 
-### TTS (Text-to-Speech)
+- The intent is the model's inference from the conversation and can be wrong.
+- Nemotron sometimes outputs nothing for English that does not sound native (seen with synthetic speech). Switch to Deepgram for speakers with strong accents.
+- Proper nouns such as people's names are often misrecognized at the ASR stage.
+- System audio capture works with Chrome / Edge on Windows. On macOS only a browser tab's audio can be captured. Phones use the microphone.
+- Speed on CPU-only or smaller GPU machines has not been tested.
 
-Click the **TTS** button to enable automatic reading of translations. The TTS language automatically matches your selected target language.
+## Documentation
 
-### LLM Models
+- Current spec (Japanese): [`docs/designs/meeting-assist-local.md`](docs/designs/meeting-assist-local.md)
+- Design history, measurements, and fixes (Japanese): [`docs/designs/meeting-assist-local-history.md`](docs/designs/meeting-assist-local-history.md)
 
-| Model | Provider | Speed | Notes |
-|-------|----------|-------|-------|
-| GPT-4 | OpenAI | Fast | Default, recommended |
-| Gemini | Google | Fast | Alternative cloud option |
-| Groq | Groq | Ultra-fast | Multiple Llama models available |
-| Gemma 3 | Ollama | Varies | Local, requires Ollama server |
-| LM Studio | LM Studio | Varies | Local, requires LM Studio |
+## Previous version (v1): Intent-First Translation
+
+v1 was a cloud-based prototype that showed a speculative translation from the speaker's intent before the sentence was finished, using Deepgram and cloud LLMs (OpenAI, Gemini, Groq). It supported English, Japanese, Spanish, and Chinese in both directions, plus TTS. Its UI is still available at `/` (without `#meeting`). The v1 README and code are at tag [`v1.0.0`](https://github.com/matu79go/ai_translator/tree/v1.0.0).
 
 ## License
 
-MIT
+MIT. The models have their own licenses: Nemotron ASR (OpenMDW-1.1), Gemma 4 (Apache 2.0). This project is not affiliated with or endorsed by NVIDIA, Google, or NASA.
