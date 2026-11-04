@@ -164,6 +164,10 @@ ASR の確定結果は文の途中で切れることがある（"…and my task"
 - **スマホ**（幅 860px 以下）：いま → 本音（返事の案は「返事の案を見る」で開く）→「会話 ／ あらすじ」タブ、の縦並び
 - **色**：白（既定）と紺。☾ / ☀ で切り替え、ブラウザに保存（`meetingAssist.theme`）。アクセントは**緑**（ロゴと同じ。白 `#0f9d6e` / 紺 `#34d399`）、本音の欄は琥珀色
 - **ブランド**：タイトル「AI Translator」、ロゴは吹き出しの「A → あ」（緑）。ファビコン、ホーム画面用アイコン、manifest（ホーム画面に追加すると `/#meeting` が開く）。`frontend/public/`
+- **小窓**（⧉、PC の Chrome / Edge のみ。`frontend/src/hooks/useMiniWindow.ts`、`components/MiniWindow.tsx`）：Document Picture-in-Picture で、いつも最前面の小さなウィンドウ（約 520×170）を開く。会議アプリの上に重ねて使う
+  - 中身：状態・いまの訳（長いときは新しい方を見せる）・💡 本音1行。データと録音は元の画面のまま（React の portal で描くだけ）
+  - 高さ **300px 以上** にのばすと、「会話 ／ あらすじ」のタブが下に出る（会話は日本語だけ、新しい順。見出しを押すとその行へ移動）
+  - 対応していないブラウザ（スマホなど）ではボタンを出さない
 - 「?」に手順の説明と「従来の画面へ」。旧画面（`ExperimentalApp`）は `/` のまま残している
 
 ## 10. 設定値
@@ -228,6 +232,7 @@ ASR の確定結果は文の途中で切れることがある（"…and my task"
 | `asr_server/asr_server.py` | Nemotron ASR サーバー |
 | `frontend/src/MeetingApp.tsx`, `meeting.css` | 会議画面 |
 | `frontend/src/components/AudioRecorder.tsx` | 音声入力（`variant="compact"`） |
+| `frontend/src/hooks/useMiniWindow.ts`, `components/MiniWindow.tsx` | 小窓（Document Picture-in-Picture） |
 | `frontend/src/hooks/useWebSocket.ts` | メッセージの型 |
 | `frontend/index.html`, `frontend/public/` | タイトル・アイコン・manifest |
 | `deploy/gx10/` | systemd ユニット、`deploy.sh`、`status.sh`、README |
