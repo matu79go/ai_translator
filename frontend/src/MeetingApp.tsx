@@ -24,6 +24,7 @@ type AsrEngine = 'deepgram' | 'nemotron';
 type StoryChunk = { index: number; start: number; n: number; first?: string; title?: string; summary?: string; done: boolean };
 
 type Theme = 'light' | 'dark';
+type NowState = { label: string; cls: string; ja: string; en: string; placeholder?: boolean };
 
 const THEME_KEY = 'meetingAssist.theme';
 function loadTheme(): Theme {
@@ -161,7 +162,7 @@ export default function MeetingApp() {
 
   // ── what the "now" panel shows: live line > English being heard > latest final ──
   const lastFinal = finals.length ? finals[finals.length - 1] : null;
-  let nowState: { label: string; cls: string; ja: string; en: string; placeholder?: boolean };
+  let nowState: NowState;
   if (live) {
     nowState = { label: '話し中', cls: 'speaking', ja: live.text, en: live.source };
   } else if (transcript) {
@@ -259,20 +260,8 @@ export default function MeetingApp() {
 
       {/* Mini window: subtitle + need only, always on top over the meeting app */}
       <MiniWindow win={mini.win}>
-        <div className="ma mini" data-theme={theme}>
-          <section className={`now ${nowState.cls}`}>
-            <div className="state">{nowState.label}</div>
-            <div className="ja-wrap">
-              <div className={`ja${nowState.placeholder ? ' placeholder' : ''}`}>
-                {recording || !nowState.placeholder ? nowState.ja : '元の画面の ● で開始します'}
-              </div>
-            </div>
-          </section>
-          <div className={`mini-need${insFresh ? ' fresh' : ''}${insight && !insight.ready ? ' not-ready' : ''}`}
-            title={insight?.need}>
-            💡 {insight ? insight.need : '相手が話し終えると、ここに本音が出ます'}
-          </div>
-        </div>
+        <MiniView theme={theme} now={nowState} recording={recording} insight={insight} insFresh={insFresh}
+          history={history} turnEnds={turnEnds} stories={stories} />
       </MiniWindow>
 
       <main className={tab === 'story' ? 'tab-story' : ''}>
@@ -347,6 +336,96 @@ export default function MeetingApp() {
           </div>
         </section>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Mini window content (Document Picture-in-Picture, always on top).
+ * Short window: subtitle + need only. Taller than 300px (CSS media query in the PiP window):
+ * also 会話 / あらすじ tabs below, newest first, Japanese only to fit the narrow window.
+ */
+function MiniView({ theme, now, recording, insight, insFresh, history, turnEnds, stories }: {
+  theme: Theme; now: NowState; recording: boolean; insight: Insight | null; insFresh: boolean;
+  history: FinalLine[]; turnEnds: number[]; stories: StoryChunk[];
+}) {
+  const [tab, setTab] = useState<'conv' | 'story'>('conv');
+  const [follow, setFollow] = useState(true);
+  const histRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (follow) histRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [history.length, follow, tab]);
+  const onHistScroll = () => {
+    const el = histRef.current;
+    if (el) setFollow(el.scrollTop < 48);
+  };
+  const jumpTo = (first?: string) => {
+    const f = first && history.find((x) => x.source === first);
+    if (!f) return;
+    setTab('conv');
+    setFollow(false);
+    setTimeout(() => {
+      const el = histRef.current?.querySelector<HTMLElement>(`[data-seq="${f.seq}"]`);
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1500);
+    }, 50);
+  };
+
+  return (
+    <div className="ma mini" data-theme={theme}>
+      <section className={`now ${now.cls}`}>
+        <div className="state">{now.label}</div>
+        <div className="ja-wrap">
+          <div className={`ja${now.placeholder ? ' placeholder' : ''}`}>
+            {recording || !now.placeholder ? now.ja : '元の画面の ● で開始します'}
+          </div>
+        </div>
+      </section>
+      <div className={`mini-need${insFresh ? ' fresh' : ''}${insight && !insight.ready ? ' not-ready' : ''}`}
+        title={insight?.need}>
+        💡 {insight ? insight.need : '相手が話し終えると、ここに本音が出ます'}
+      </div>
+
+      <section className="panel mini-more">
+        <div className="mini-tabs">
+          <button className={tab === 'conv' ? 'on' : ''} onClick={() => setTab('conv')}>会話</button>
+          <button className={tab === 'story' ? 'on' : ''} onClick={() => setTab('story')}>あらすじ</button>
+        </div>
+        {tab === 'conv' && !follow && (
+          <button className="jump" onClick={() => { setFollow(true); histRef.current?.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+            ↑ 最新へ
+          </button>
+        )}
+        {tab === 'conv' ? (
+          <div className="hist" ref={histRef} onScroll={onHistScroll}>
+            {history.length === 0 && <p className="empty">確定した訳がここに新しい順で並びます</p>}
+            {history.map((f) => (
+              <div key={f.seq}>
+                {turnEnds.includes(f.seq) && <div className="turn">── 相手が話し終えました</div>}
+                <div className="h" data-seq={f.seq}><div className="ja">{f.text}</div></div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="story">
+            {stories.length === 0 && <p className="empty">会話がある程度たまると、区切りごとの要約がここに並びます</p>}
+            {stories.map((st) => (
+              <div key={st.index} className={`st${st.done ? '' : ' progress'}`}>
+                <div className="top">
+                  <time>{fmtTime(st.start)}</time>
+                  {st.done
+                    ? <button className="title" onClick={() => jumpTo(st.first)} title="この区切りの会話へ">{st.title}</button>
+                    : <span className="title">進行中（{st.n}文）…</span>}
+                </div>
+                {st.done && st.summary && <div className="sum">{st.summary}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
