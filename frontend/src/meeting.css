@@ -139,7 +139,9 @@
 .ma.mini .now { flex: 1; min-height: 0; padding: 6px 12px; border-radius: 10px; justify-content: flex-start; }
 .ma.mini .now .state { font-size: 11px; margin-bottom: 2px; flex: none; }
 /* Long lines: keep the newest part visible (overflow goes off the top) */
-.ma.mini .ja-wrap { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.ma.mini .ja-wrap { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end;
+  /* soften the line cut off at the top when the translation is longer than the window */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.7em); mask-image: linear-gradient(to bottom, transparent 0, #000 1.7em); }
 .ma.mini .now .ja { font-size: clamp(16px, 4.4vw, 30px); line-height: 1.4; }
 .ma.mini .now .ja.placeholder { font-size: 14px; }
 .ma.mini .mini-need { flex: none; padding: 5px 12px; border: 1px solid var(--amber-line); border-radius: 10px; background: var(--panel);
