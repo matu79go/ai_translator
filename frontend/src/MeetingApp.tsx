@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AudioRecorder } from './components/AudioRecorder';
+import { MiniWindow } from './components/MiniWindow';
+import { isMiniWindowSupported, useMiniWindow } from './hooks/useMiniWindow';
 import { useWebSocket, type WebSocketMessage } from './hooks/useWebSocket';
 import './meeting.css';
 
@@ -59,6 +61,7 @@ export default function MeetingApp() {
   const maxFinalSeq = useRef(0);
   const histRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
+  const mini = useMiniWindow();
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
     switch (message.type) {
@@ -248,7 +251,29 @@ export default function MeetingApp() {
           {theme === 'light' ? '☾' : '☀'}
         </button>
         <button className="icon" onClick={clearAll} title="クリア" aria-label="クリア">⌫</button>
+        {isMiniWindowSupported() && (
+          <button className={`icon${mini.win ? ' on' : ''}`} onClick={mini.win ? mini.close : mini.open}
+            title={mini.win ? '小窓を閉じる' : '字幕と本音を、いつも最前面の小窓に出す'} aria-label="小窓">⧉</button>
+        )}
       </div>
+
+      {/* Mini window: subtitle + need only, always on top over the meeting app */}
+      <MiniWindow win={mini.win}>
+        <div className="ma mini" data-theme={theme}>
+          <section className={`now ${nowState.cls}`}>
+            <div className="state">{nowState.label}</div>
+            <div className="ja-wrap">
+              <div className={`ja${nowState.placeholder ? ' placeholder' : ''}`}>
+                {recording || !nowState.placeholder ? nowState.ja : '元の画面の ● で開始します'}
+              </div>
+            </div>
+          </section>
+          <div className={`mini-need${insFresh ? ' fresh' : ''}${insight && !insight.ready ? ' not-ready' : ''}`}
+            title={insight?.need}>
+            💡 {insight ? insight.need : '相手が話し終えると、ここに本音が出ます'}
+          </div>
+        </div>
+      </MiniWindow>
 
       <main className={tab === 'story' ? 'tab-story' : ''}>
         <section className={`now ${nowState.cls}`}>

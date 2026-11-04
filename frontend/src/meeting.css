@@ -133,3 +133,17 @@
   .ma .seg button { padding: 6px 8px; }
   .ma .conn { font-size: 11px; padding: 3px 8px; }
 }
+
+/* ── mini window (Document Picture-in-Picture): subtitle + need, always on top ── */
+.ma.mini { height: 100vh; padding: 6px; gap: 6px; box-sizing: border-box; }
+.ma.mini .now { flex: 1; min-height: 0; padding: 6px 12px; border-radius: 10px; justify-content: flex-start; }
+.ma.mini .now .state { font-size: 11px; margin-bottom: 2px; flex: none; }
+/* Long lines: keep the newest part visible (overflow goes off the top) */
+.ma.mini .ja-wrap { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.ma.mini .now .ja { font-size: clamp(16px, 4.4vw, 30px); line-height: 1.4; }
+.ma.mini .now .ja.placeholder { font-size: 14px; }
+.ma.mini .mini-need { flex: none; padding: 5px 12px; border: 1px solid var(--amber-line); border-radius: 10px; background: var(--panel);
+  font-size: clamp(13px, 3.2vw, 20px); font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ma.mini .mini-need.not-ready { color: var(--dim); font-weight: 400; }
+.ma.mini .mini-need.fresh { box-shadow: 0 0 0 2px var(--amber-line); background: var(--amber-soft); transition: box-shadow .3s, background .3s; }
+.ma .icon.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
