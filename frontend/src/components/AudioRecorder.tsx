@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Loader2, MonitorSpeaker } from 'lucide-react';
+import { STRINGS, type Strings } from '../i18n';
 
 export type AudioSource = 'mic' | 'system';
 
@@ -14,6 +15,8 @@ export interface AudioRecorderProps {
   /** 'compact': small record button + input switch for a toolbar (meeting page, uses meeting.css classes). */
   variant?: 'default' | 'compact';
   onRecordingChange?: (recording: boolean) => void;
+  /** UI strings (meeting page language). Default: Japanese. */
+  strings?: Strings;
 }
 
 /** Phones/tablets: mobile browsers cannot capture system/tab audio (no getDisplayMedia audio). */
@@ -30,7 +33,7 @@ function supportsSystemAudio(): boolean {
  * Windows Chrome/Edge: choose "Entire screen" + "Share system audio" (works with desktop Zoom/Teams).
  * Any OS: choose a Chrome tab + "Share tab audio" (browser meetings).
  */
-async function getSystemAudioStream(): Promise<MediaStream> {
+async function getSystemAudioStream(noAudioMessage: string): Promise<MediaStream> {
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: true, // Chrome rejects audio-only requests
     audio: {
@@ -43,10 +46,7 @@ async function getSystemAudioStream(): Promise<MediaStream> {
   stream.getVideoTracks().forEach((t) => t.stop()); // video is not needed
   if (stream.getAudioTracks().length === 0) {
     stream.getTracks().forEach((t) => t.stop());
-    throw new Error(
-      '音声が共有されていません。共有画面で「画面全体」を選び「システム音声を共有」をオンにするか、' +
-      '会議のタブを選び「タブの音声を共有」をオンにしてください。'
-    );
+    throw new Error(noAudioMessage);
   }
   return new MediaStream(stream.getAudioTracks());
 }
@@ -60,6 +60,7 @@ export function AudioRecorder({
   defaultSource = 'mic',
   variant = 'default',
   onRecordingChange,
+  strings = STRINGS.ja,
 }: AudioRecorderProps) {
   const systemAudioOk = enableSystemAudio && supportsSystemAudio();
   const [inputSource, setInputSource] = useState<AudioSource>(systemAudioOk ? defaultSource : 'mic');
@@ -123,7 +124,7 @@ export function AudioRecorder({
         audioConstraints.deviceId = selectedDeviceId;
       }
       const stream = inputSource === 'system'
-        ? await getSystemAudioStream()
+        ? await getSystemAudioStream(strings.noSharedAudio)
         : await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
 
       mediaStreamRef.current = stream;
@@ -171,7 +172,7 @@ export function AudioRecorder({
     } finally {
       setIsInitializing(false);
     }
-  }, [onStart, onAudioData, selectedDeviceId, inputSource]);
+  }, [onStart, onAudioData, selectedDeviceId, inputSource, strings.noSharedAudio]);
 
   const stopRecording = useCallback(() => {
     // Stop processor
@@ -231,15 +232,15 @@ export function AudioRecorder({
           className={`rec${isRecording ? ' on' : ''}`}
           onClick={handleClick}
           disabled={isInitializing}
-          title={isRecording ? '停止' : '開始'}
-          aria-label={isRecording ? '停止' : '開始'}
+          title={isRecording ? strings.recStop : strings.recStart}
+          aria-label={isRecording ? strings.recStop : strings.recStart}
         />
         {systemAudioOk && (
-          <div className="seg" title="音声の取り方">
-            <span className="k">入力</span>
+          <div className="seg" title={strings.inputTitle}>
+            <span className="k">{strings.inputKey}</span>
             {([
-              { value: 'system', label: '会議の音声' },
-              { value: 'mic', label: 'マイク' },
+              { value: 'system', label: strings.inputSystem },
+              { value: 'mic', label: strings.inputMic },
             ] as const).map(({ value, label }) => (
               <button key={value} className={inputSource === value ? 'on' : ''}
                 onClick={() => setInputSource(value)} disabled={isRecording}>

@@ -126,6 +126,36 @@ DEEPGRAM_LANG_MAP = {
     "zh": "zh",
 }
 
+# Nemotron 3.5 ASR is multilingual; the locale is chosen per connection (asr_server ?language=).
+NEMOTRON_LANG_MAP = {
+    "en": "en-US",
+    "ja": "ja-JP",
+    "es": "es-ES",
+    "zh": "zh-CN",
+}
+
+# Languages written without spaces between words (docs/designs/ja-to-en.md §3).
+CJK_LANGS = ("ja", "zh")
+_CJK_CHAR = r"[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]"
+
+
+def normalize_asr_text(text: str, lang: str) -> str:
+    """Drop spaces next to CJK characters (Nemotron "。 それでは", Deepgram word spacing)."""
+    if lang in CJK_LANGS:
+        text = re.sub(rf"(?<={_CJK_CHAR})\s+|\s+(?={_CJK_CHAR})", "", text).strip()
+    return text
+
+
+def join_text(parts: list[str], lang: str) -> str:
+    return ("" if lang in CJK_LANGS else " ").join(parts)
+
+
+def text_units(text: str, lang: str) -> int:
+    """Length in "words": CJK counts 2 characters as 1 word, so the word thresholds still apply."""
+    if lang in CJK_LANGS:
+        return len(re.sub(r"[\s。、？！「」.,?!]", "", text)) // 2
+    return len(text.split())
+
 # Keyword → topic prediction mapping (for instant response)
 KEYWORD_TOPICS = {
     # Schedule / Time
@@ -274,16 +304,28 @@ def build_translation_only_prompt(source_lang: str, target_lang: str) -> str:
     return f"""You are a real-time simultaneous interpreter. Translate the {src} utterance into natural {tgt}.
 - If the utterance is incomplete, still produce a natural {tgt} sentence for what has been said so far.
 - Use the previous utterances only as context; translate only the current utterance.
+- Never translate or repeat the previous utterances, even if the current one is a short fragment.
 - Output ONLY the {tgt} translation. One version only. No quotes, no notes, no alternatives."""
 
 
-def build_insight_prompt() -> str:
+def build_insight_prompt(target_lang: str = "ja") -> str:
     """GX10 meeting mode: the other party's situation, underlying need, and replies.
 
     situation comes first so the model fixes whose perspective it is before writing the need
     (without it, a lecture's topic was written as the speaker's wish and echoed back as the
     user's wish: "知りたい" -> "教えてください"). It costs ~0.16s before the need appears.
+    The Japanese text is the original (en -> ja); other target languages use the English version.
     """
+    if target_lang != "ja":
+        tgt = LANG_NAMES.get(target_lang, "English")
+        return f"""You are a conversation assistant supporting a user in an online meeting.
+"They" are the people speaking in another language; "the user" listens and replies to them next.
+From the flow of what they said, think in this order and output JSON. Write every value in {tgt}.
+- situation: what position they are speaking from right now (e.g. asking a question / explaining or presenting / making a proposal / raising a concern / making small talk), max 6 words
+- need: what they really want from the user, in one sentence of max 15 words. Not a rephrasing of the topic: their underlying wish or concern. If they are explaining or presenting, it is a speaker's wish such as "wants to know it landed" or "wants agreement"
+- ready: false if they are still in the preamble and the main point is not visible yet
+- replies: two replies the user could say to them. They must meet or answer the need. Do not restate the need as the user's own wish. Natural spoken {tgt} the user can say as is, max 20 words each
+JSON only, in this order: {{"situation":"...","need":"...","ready":true,"replies":["...","..."]}}"""
     return """あなたはオンライン会議で日本人ユーザーを支える会話アシスタントです。
 「相手」は英語で話している人、「ユーザー」はそれを聞いていて、次に相手に返事をする人です。
 相手の発言の流れから、次の順に考えてJSONで出力してください。
@@ -294,8 +336,16 @@ def build_insight_prompt() -> str:
 JSONのみ、この順で: {"situation":"...","need":"...","ready":true,"replies":["...","..."]}"""
 
 
-def build_story_prompt() -> str:
+def build_story_prompt(target_lang: str = "ja") -> str:
     """GX10 meeting mode: summary of one chunk of the conversation, for the running synopsis."""
+    if target_lang != "ja":
+        tgt = LANG_NAMES.get(target_lang, "English")
+        return f"""You take notes for an online meeting.
+Summarize one chunk of the conversation (what the other party said) briefly in {tgt}.
+- title: a heading for the topic of this chunk, max 6 words (e.g. Introductions and background / Why this company / Concerns about price)
+- summary: what was said, max 30 words. Keep proper nouns and numbers
+- If previous headings are given, write a heading that continues the story without repeating them
+JSON only: {{"title":"...","summary":"..."}}"""
     return """あなたはオンライン会議の議事メモ係です。
 英語の会話の一区切り（相手の発言）を、日本語で短くまとめてください。
 - title: この区切りの話題の見出し。日本語15字以内（例: 自己紹介と経歴 / 志望理由 / 価格への懸念）
@@ -313,8 +363,9 @@ class StorySummarizer:
     (= translation source_text) so the page can jump to it.
     """
 
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, target_lang: str = "ja"):
         self.websocket = websocket
+        self.target_lang = target_lang
         self.t0 = time.time()
         self.items: list[str] = []
         self.chunk_start = 0.0
@@ -345,21 +396,23 @@ class StorySummarizer:
         asyncio.create_task(self._summarize(items, index, start))
 
     async def _summarize(self, items: list[str], index: int, start: float):
-        prev = ("これまでの見出し: " + " / ".join(self.titles[-5:]) + "\n\n") if self.titles else ""
+        ja = self.target_lang == "ja"
+        prev_label, chunk_label = ("これまでの見出し: ", "この区切りの発言:\n") if ja else ("Previous headings: ", "This chunk:\n")
+        prev = (prev_label + " / ".join(self.titles[-5:]) + "\n\n") if self.titles else ""
         t = time.time()
         try:
             r = await gx10_client.chat.completions.create(
                 model=GX10_MODEL, temperature=0.3, max_tokens=200,
                 response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": build_story_prompt()},
-                          {"role": "user", "content": prev + "この区切りの発言:\n" + "\n".join(items)}],
+                messages=[{"role": "system", "content": build_story_prompt(self.target_lang)},
+                          {"role": "user", "content": prev + chunk_label + "\n".join(items)}],
             )
             out = r.choices[0].message.content or ""
             data = json.loads(out[out.find("{"):out.rfind("}") + 1])
         except Exception as e:
             print(f"[Story] #{index} error: {type(e).__name__}: {e}", flush=True)
-            data = {"title": "（要約できませんでした）", "summary": ""}
-        title = str(data.get("title", ""))[:30]
+            data = {"title": "（要約できませんでした）" if ja else "(Could not summarize)", "summary": ""}
+        title = str(data.get("title", ""))[:30 if ja else 60]
         self.titles.append(title)
         print(f"[Story] #{index} ({len(items)} utt) in {(time.time() - t)*1000:.0f}ms: {title}", flush=True)
         await self._send({"type": "story", "index": index, "start": round(start), "n": len(items),
@@ -630,7 +683,8 @@ class SummaryGenerator:
             return
         self.last_summary_hash = current_hash
 
-        conversation = "\n".join(f"相手: {t}" for t in history)
+        ja = self.target_lang == "ja"
+        conversation = "\n".join(f"{'相手' if ja else 'They'}: {t}" for t in history)
         start = time.time()
         print(f"[Insight GX10] Start for {len(history)} utterances", flush=True)
         out = ""
@@ -639,8 +693,8 @@ class SummaryGenerator:
             stream = await gx10_client.chat.completions.create(
                 model=GX10_MODEL, temperature=0.5, max_tokens=300, stream=True,
                 response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": build_insight_prompt()},
-                          {"role": "user", "content": "会話の流れ:\n" + conversation}],
+                messages=[{"role": "system", "content": build_insight_prompt(self.target_lang)},
+                          {"role": "user", "content": ("会話の流れ:\n" if ja else "Conversation so far:\n") + conversation}],
             )
             async for chunk in stream:
                 delta = chunk.choices[0].delta.content if chunk.choices else None
@@ -758,7 +812,7 @@ class IntentEstimator:
 
         self.last_text = text
         current_time = time.time() * 1000
-        word_count = len(text.split())
+        word_count = text_units(text, self.source_lang)
 
         if is_final:
             # A debounced partial still waiting would run after this final and re-show
@@ -1383,7 +1437,7 @@ class TranscriptionManager:
             websocket, target_lang=target_lang
         )
         self.keyword_predictor = KeywordPredictor(websocket)
-        self.story = StorySummarizer(websocket)
+        self.story = StorySummarizer(websocket, target_lang=target_lang)
         self.summary_generator.on_turn_end = self.story.on_turn_end
         self.utterance_fragments: list[str] = []  # gx10: finalized fragments of the current utterance
         self._flush_fallback: Optional[asyncio.Task] = None
@@ -1407,7 +1461,7 @@ class TranscriptionManager:
             self._flush_fallback.cancel()
         if not self.utterance_fragments:
             return
-        utterance = " ".join(self.utterance_fragments)
+        utterance = join_text(self.utterance_fragments, self.source_lang)
         self.utterance_fragments = []
         print(f"[Utterance] flush ({reason}): {utterance[:60]}", flush=True)
         asyncio.create_task(self.intent_estimator.estimate(utterance, True))
@@ -1462,19 +1516,22 @@ class TranscriptionManager:
         print(f"[Mode] Switched to {mode_name}", flush=True)
 
     async def set_languages(self, source_lang: LanguageCode, target_lang: LanguageCode) -> bool:
-        """Set source/target languages. Restarts Deepgram if source language changed.
-        Returns True if Deepgram was restarted."""
+        """Set source/target languages. Restarts the ASR (Deepgram or Nemotron) if the source changed."""
         old_source = self.source_lang
         self.source_lang = source_lang
         self.target_lang = target_lang
         self.intent_estimator.source_lang = source_lang
         self.intent_estimator.target_lang = target_lang
         self.summary_generator.target_lang = target_lang
+        self.story.target_lang = target_lang
         print(f"[Lang] Set {LANG_NAMES[source_lang]} → {LANG_NAMES[target_lang]}", flush=True)
 
-        # Restart Deepgram if source language changed
+        if self.asr_engine == "nemotron" and source_lang not in NEMOTRON_LANG_MAP:
+            await self.close()
+            self.asr_engine = "deepgram"
+        # Restart the ASR if the source language changed
         if old_source != source_lang and self.is_running:
-            print(f"[Lang] Source language changed, restarting Deepgram...", flush=True)
+            print(f"[Lang] Source language changed, restarting {self.asr_engine}...", flush=True)
             await self.close()
             return await self.start()
         return True
@@ -1487,8 +1544,8 @@ class TranscriptionManager:
 
     async def set_asr(self, engine: ASREngine) -> bool:
         """Switch ASR engine; reconnects if running. Returns False if the switch failed."""
-        if engine == "nemotron" and self.source_lang != "en":
-            await self.websocket.send_json({"type": "error", "message": "Nemotron ASR は英語のみです"})
+        if engine == "nemotron" and self.source_lang not in NEMOTRON_LANG_MAP:
+            await self.websocket.send_json({"type": "error", "message": f"Nemotron ASR: {LANG_NAMES[self.source_lang]} is not supported"})
             return False
         if engine == self.asr_engine:
             return True
@@ -1500,9 +1557,11 @@ class TranscriptionManager:
 
     async def _start_nemotron(self):
         import websockets  # uvicorn[standard] dependency
+        locale = NEMOTRON_LANG_MAP.get(self.source_lang, "en-US")
+        url = f"{NEMOTRON_ASR_URL}{'&' if '?' in NEMOTRON_ASR_URL else '?'}language={locale}"
         try:
             self.nm_ws = await asyncio.wait_for(
-                websockets.connect(NEMOTRON_ASR_URL, max_size=None, ping_interval=20), timeout=5)
+                websockets.connect(url, max_size=None, ping_interval=20), timeout=5)
             ready = json.loads(await asyncio.wait_for(self.nm_ws.recv(), timeout=5))
             if ready.get("type") == "Error":  # e.g. all streams busy
                 await self.websocket.send_json({"type": "error", "message": ready.get("message", "Nemotron ASR error")})
@@ -1520,7 +1579,7 @@ class TranscriptionManager:
             return False
         self.is_running = True
         self.nm_task = asyncio.create_task(self._nemotron_receive(self.nm_ws))
-        print(f"[Nemotron] connected {NEMOTRON_ASR_URL}", flush=True)
+        print(f"[Nemotron] connected {url}", flush=True)
         await self.websocket.send_json({"type": "status", "message": "Connected - Nemotron ASR (GX10)"})
         return True
 
@@ -1604,7 +1663,7 @@ class TranscriptionManager:
         if result:
             try:
                 transcript_data = result.channel.alternatives[0]
-                transcript = transcript_data.transcript
+                transcript = normalize_asr_text(transcript_data.transcript, self.source_lang)
 
                 if transcript:
                     is_final = result.is_final
@@ -1625,10 +1684,10 @@ class TranscriptionManager:
                         # Join finalized fragments; translate "fragments so far + interim" as a partial.
                         if is_final:
                             self.utterance_fragments.append(transcript)
-                            joined = " ".join(self.utterance_fragments)
+                            joined = join_text(self.utterance_fragments, self.source_lang)
                             self.summary_generator.on_speech_activity()
                             self._schedule_flush_fallback()
-                            n_words = len(joined.split())
+                            n_words = text_units(joined, self.source_lang)
                             if n_words >= UTTERANCE_MAX_WORDS:
                                 await self._flush_utterance("max words")
                             elif speech_final and n_words >= UTTERANCE_FLUSH_MIN_WORDS:
@@ -1636,7 +1695,7 @@ class TranscriptionManager:
                             else:
                                 asyncio.create_task(self.intent_estimator.estimate(joined, False))
                         else:
-                            joined = " ".join(self.utterance_fragments + [transcript])
+                            joined = join_text(self.utterance_fragments + [transcript], self.source_lang)
                             asyncio.create_task(self.intent_estimator.estimate(joined, False))
                             self.summary_generator.on_speech_activity()
                             if self._flush_fallback and not self._flush_fallback.done():
@@ -1723,7 +1782,14 @@ async def websocket_audio(websocket: WebSocket):
 
     try:
         asr = websocket.query_params.get("asr", "deepgram")
-        manager = TranscriptionManager(websocket, asr_engine=asr if asr in ("deepgram", "nemotron") else "deepgram")
+        src = websocket.query_params.get("src", "en")
+        tgt = websocket.query_params.get("tgt", "ja")
+        if src not in LANG_NAMES or tgt not in LANG_NAMES or src == tgt:
+            src, tgt = "en", "ja"
+        if asr == "nemotron" and src not in NEMOTRON_LANG_MAP:
+            asr = "deepgram"
+        manager = TranscriptionManager(websocket, source_lang=src, target_lang=tgt,
+                                       asr_engine=asr if asr in ("deepgram", "nemotron") else "deepgram")
         if not await manager.start():
             await websocket.close()
             return

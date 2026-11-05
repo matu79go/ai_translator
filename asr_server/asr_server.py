@@ -10,7 +10,9 @@ Server -> client:
 
 Nemotron has no finality signal, so endpointing is done here from token activity:
   - no new token for --final-silence (0.7s) -> final segment (is_final = speech_final = true)
-  - segment >= LONG_SEGMENT_WORDS words   -> final at the next . ? ! ,
+  - segment >= LONG_SEGMENT_WORDS words   -> final at the next . ? ! , (CJK: 2 chars = 1 word, 。、？！ too)
+
+Language per connection: ws://host:8092/ws?language=ja-JP (default --language).
   - no new token for UTTERANCE_END_S      -> UtteranceEnd (once)
 """
 import argparse
@@ -19,6 +21,7 @@ import json
 import re
 import threading
 import time
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 import torch
@@ -52,7 +55,20 @@ HOP, NFFT = proc.feature_extractor.hop_length, proc.feature_extractor.n_fft
 print(f"loaded {MID} x{args.streams}: chunk {proc.streaming_latency_ms} ms, gpu {torch.cuda.memory_allocated() / 1e9:.2f} GB", flush=True)
 
 
-def clean(text: str) -> str:
+# Languages written without spaces between words. Tokens come out a character or two at a time,
+# so the whole interim can be sent, and "words" are counted as 2 characters each.
+CJK_PREFIXES = ("ja", "zh")
+PUNCT = ".,?!"
+CJK_PUNCT = "。、？！.,?!"
+
+
+def is_cjk(language: str) -> bool:
+    return language.lower().startswith(CJK_PREFIXES)
+
+
+def clean(text: str, cjk: bool = False) -> str:
+    if cjk:
+        return re.sub(r"\s+", "", text)  # "。 それでは" -> "。それでは"
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"\s+([.,?!])", r"\1", text)  # "yourself ?" -> "yourself?"
     return text.strip()
@@ -104,13 +120,13 @@ class TokenStreamer(BaseStreamer):
         pass
 
 
-def run_generate(model, audio: AudioQueue, streamer: TokenStreamer):
+def run_generate(model, audio: AudioQueue, streamer: TokenStreamer, language: str = args.language):
     """Blocking: feed audio chunks to generate() as they arrive (same chunking as nemo_stream.py)."""
     n0 = proc.num_samples_first_audio_chunk
     if not audio.wait_for(n0):
         return
     first = proc(audio.buf[:n0], sampling_rate=SR, is_streaming=True, is_first_audio_chunk=True,
-                 language=args.language, return_tensors="pt").to(model.device, dtype=model.dtype)
+                 language=language, return_tensors="pt").to(model.device, dtype=model.dtype)
 
     def features():
         yield first.input_features[:, : proc.num_mel_frames_first_audio_chunk, :]
@@ -122,7 +138,7 @@ def run_generate(model, audio: AudioQueue, streamer: TokenStreamer):
                 return
             seg = audio.buf[s:e] if s >= 0 else np.concatenate([np.zeros(-s, dtype=np.float32), audio.buf[:e]])
             x = proc(seg, sampling_rate=SR, is_streaming=True, is_first_audio_chunk=False,
-                     language=args.language, return_tensors="pt").to(model.device, dtype=model.dtype)
+                     language=language, return_tensors="pt").to(model.device, dtype=model.dtype)
             yield x.input_features
             mel += proc.num_mel_frames_per_audio_chunk
 
@@ -133,8 +149,10 @@ def run_generate(model, audio: AudioQueue, streamer: TokenStreamer):
 class Endpointer:
     """Turns the append-only token stream into Deepgram-like interim / final / UtteranceEnd events."""
 
-    def __init__(self, send):
+    def __init__(self, send, language: str = args.language):
         self.send = send
+        self.cjk = is_cjk(language)
+        self.punct = CJK_PUNCT if self.cjk else PUNCT
         self.ids: list[int] = []
         self.seg_start = 0          # index into ids where the current segment starts
         self.last_token_t = None    # time of the last token that changed the text
@@ -143,7 +161,11 @@ class Endpointer:
 
     def seg_text(self) -> str:
         # Punctuation emitted right after a cut belongs to the previous segment: drop it here.
-        return clean(proc.decode(self.ids[self.seg_start:], skip_special_tokens=True)).lstrip(".,?! ")
+        text = clean(proc.decode(self.ids[self.seg_start:], skip_special_tokens=True), self.cjk)
+        return text.lstrip(self.punct + " ")
+
+    def n_words(self, text: str) -> int:
+        return len(text) // 2 if self.cjk else len(text.split())
 
     async def on_ids(self, new_ids):
         before = self.seg_text()
@@ -153,13 +175,15 @@ class Endpointer:
             return
         self.last_token_t = time.monotonic()
         self.utterance_end_sent = False
-        words = text.split()
-        if len(words) >= args.long_segment_words and text[-1:] in ".?!,":
+        if self.n_words(text) >= args.long_segment_words and text[-1:] in self.punct:
             await self.finalize()
             return
         # The last word may still be growing ("apo" -> "apostle"): only send complete words,
-        # unless the text ends with punctuation.
-        interim = text if text[-1:] in ".?!," else " ".join(words[:-1])
+        # unless the text ends with punctuation. CJK has no spaces: send it all.
+        if self.cjk or text[-1:] in self.punct:
+            interim = text
+        else:
+            interim = " ".join(text.split()[:-1])
         if interim and interim != self.last_interim:
             self.last_interim = interim
             await self.send({"type": "Results", "transcript": interim, "is_final": False, "speech_final": False})
@@ -183,8 +207,14 @@ class Endpointer:
 
 
 async def handle(ws):
-    if ws.request.path not in ("/ws", "/ws/"):
+    url = urlsplit(ws.request.path)
+    if url.path not in ("/ws", "/ws/"):
         await ws.close(code=4404, reason="use /ws")
+        return
+    language = parse_qs(url.query).get("language", [args.language])[0]
+    if language not in proc_languages():
+        await ws.send(json.dumps({"type": "Error", "message": f"Nemotron ASR: unsupported language {language}"}))
+        await ws.close(code=4400, reason="language")
         return
     loop = asyncio.get_running_loop()
     peer = ws.remote_address
@@ -194,7 +224,7 @@ async def handle(ws):
         await ws.close(code=1013, reason="busy")
         return
     model = FREE_MODELS.pop()
-    print(f"[conn] open {peer} ({len(FREE_MODELS)} free)", flush=True)
+    print(f"[conn] open {peer} {language} ({len(FREE_MODELS)} free)", flush=True)
 
     async def send(msg):
         try:
@@ -202,7 +232,7 @@ async def handle(ws):
         except websockets.ConnectionClosed:
             pass
 
-    ep = Endpointer(send)
+    ep = Endpointer(send, language)
     audio = AudioQueue()
     def on_ids(ids):
         fut = asyncio.run_coroutine_threadsafe(ep.on_ids(ids), loop)
@@ -212,7 +242,7 @@ async def handle(ws):
 
     def gen_logged():
         try:
-            run_generate(model, audio, streamer)
+            run_generate(model, audio, streamer, language)
         except Exception as e:  # noqa: BLE001
             print(f"[conn] generate error: {type(e).__name__}: {e}", flush=True)
             raise
@@ -251,6 +281,11 @@ async def handle(ws):
         else:  # generate still running (should not happen after audio.close): don't hand this instance out
             print(f"[conn] WARNING generate did not finish; instance not reused", flush=True)
         print(f"[conn] closed {peer} ({len(FREE_MODELS)} free)", flush=True)
+
+
+def proc_languages() -> set:
+    """Locales the processor accepts (e.g. en-US, ja-JP), plus "auto"."""
+    return set(getattr(proc, "prompt_dictionary", None) or {args.language}) | {"auto"}
 
 
 def warmup():

@@ -3,6 +3,7 @@ import { AudioRecorder } from './components/AudioRecorder';
 import { MiniWindow } from './components/MiniWindow';
 import { isMiniWindowSupported, useMiniWindow } from './hooks/useMiniWindow';
 import { useWebSocket, type WebSocketMessage } from './hooks/useWebSocket';
+import { LANG_PAIRS, STRINGS, type LangPair, type Strings } from './i18n';
 import './meeting.css';
 
 /**
@@ -44,8 +45,21 @@ function loadAsr(): AsrEngine {
   }
 }
 
+const LANG_KEY = 'meetingAssist.langPair';
+function loadLangPair(): LangPair {
+  try {
+    return localStorage.getItem(LANG_KEY) === 'ja-en' ? 'ja-en' : 'en-ja';
+  } catch {
+    return 'en-ja';
+  }
+}
+
 export default function MeetingApp() {
-  const [status, setStatus] = useState('待機中');
+  const [langPair, setLangPair] = useState<LangPair>(loadLangPair);
+  const pair = LANG_PAIRS.find((p) => p.value === langPair) ?? LANG_PAIRS[0];
+  const t = STRINGS[pair.tgt];
+  const cjkSource = pair.src === 'ja';
+  const [status, setStatus] = useState(t.idle);
   const [transcript, setTranscript] = useState('');
   const [finals, setFinals] = useState<FinalLine[]>([]);
   const [live, setLive] = useState<LiveLine | null>(null);
@@ -82,7 +96,7 @@ export default function MeetingApp() {
             // Same utterance (source grew) but the new guess is much shorter: keep the current
             // line instead of visibly shrinking it. The next update or the final replaces it.
             // (Deepgram revises interim words, so "same utterance" = same first 3 words.)
-            if (prev && sameUtterance(prev.source, message.source_text)
+            if (prev && sameUtterance(prev.source, message.source_text, cjkSource)
                 && message.translation.length < prev.text.length * 0.7) return prev;
             return { seq, source: message.source_text, text: message.translation };
           });
@@ -116,22 +130,36 @@ export default function MeetingApp() {
         setStatus(message.message);
         break;
       case 'error':
-        setStatus(`エラー: ${message.message}`);
+        setStatus(`${t.errorPrefix}: ${message.message}`);
         break;
     }
-  }, []);
+  }, [t, cjkSource]);
 
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsHost = import.meta.env.MODE === 'development' ? `${window.location.hostname}:8000` : window.location.host;
 
   const { isConnected, connect, disconnect, sendAudio, sendControl } = useWebSocket({
-    url: `${wsProtocol}//${wsHost}/ws/audio?asr=${asr}`,
+    url: `${wsProtocol}//${wsHost}/ws/audio?asr=${asr}&src=${pair.src}&tgt=${pair.tgt}`,
     onMessage: handleMessage,
-    onOpen: () => setStatus('接続中...'),
+    onOpen: () => setStatus(t.connecting),
     // Keep an error visible (e.g. "Nemotron ASR (GX10) に接続できません") instead of overwriting it
-    onClose: () => { setStatus((prev) => (prev.startsWith('エラー') ? `${prev}（切断）` : '切断')); setTranscript(''); },
-    onError: () => setStatus('接続エラー'),
+    onClose: () => { setStatus((prev) => (prev.startsWith(t.errorPrefix) ? `${prev}${t.disconnectedSuffix}` : t.disconnected)); setTranscript(''); },
+    onError: () => setStatus(t.connError),
   });
+
+  // Page language follows the translation's target language
+  useEffect(() => {
+    document.documentElement.lang = pair.tgt;
+  }, [pair.tgt]);
+
+  const selectLangPair = (value: LangPair) => {
+    if (recording || value === langPair) return;
+    setLangPair(value);
+    const next = LANG_PAIRS.find((p) => p.value === value) ?? LANG_PAIRS[0];
+    if (!isConnected) setStatus(STRINGS[next.tgt].idle);
+    try { localStorage.setItem(LANG_KEY, value); } catch { /* storage unavailable */ }
+    clearAll();  // history/insight of the other direction would be mixed in
+  };
 
   // Meeting mode always uses the GX10 pipeline
   useEffect(() => {
@@ -164,14 +192,14 @@ export default function MeetingApp() {
   const lastFinal = finals.length ? finals[finals.length - 1] : null;
   let nowState: NowState;
   if (live) {
-    nowState = { label: '話し中', cls: 'speaking', ja: live.text, en: live.source };
+    nowState = { label: t.speaking, cls: 'speaking', ja: live.text, en: live.source };
   } else if (transcript) {
-    nowState = { label: '聞き取り中', cls: 'speaking', ja: '訳を準備中…', en: transcript, placeholder: true };
+    nowState = { label: t.listening, cls: 'speaking', ja: t.preparing, en: transcript, placeholder: true };
   } else if (lastFinal) {
     const ended = turnEnds.includes(lastFinal.seq);
-    nowState = { label: ended ? '相手が話し終えました' : lastFinal.done ? '確定' : '訳を確定中', cls: 'done', ja: lastFinal.text, en: lastFinal.source };
+    nowState = { label: ended ? t.theyFinished : lastFinal.done ? t.final : t.finalizing, cls: 'done', ja: lastFinal.text, en: lastFinal.source };
   } else {
-    nowState = { label: recording ? '待機中' : '停止中', cls: 'done', ja: recording ? '相手が話すと、ここに大きく訳が出ます' : '左上の ● を押して開始します', en: '', placeholder: true };
+    nowState = { label: recording ? t.idle : t.stopped, cls: 'done', ja: recording ? t.waitingHint : t.startHint, en: '', placeholder: true };
   }
   // History = finals not shown in the now panel, newest first
   const showsLastFinal = !live && !transcript && !!lastFinal;
@@ -203,14 +231,14 @@ export default function MeetingApp() {
 
   const tabs = (
     <span className="tabs">
-      <button className={tab === 'conv' ? 'on' : ''} onClick={() => setTab('conv')}>会話</button>
-      <button className={tab === 'story' ? 'on' : ''} onClick={() => setTab('story')}>あらすじ</button>
+      <button className={tab === 'conv' ? 'on' : ''} onClick={() => setTab('conv')}>{t.conv}</button>
+      <button className={tab === 'story' ? 'on' : ''} onClick={() => setTab('story')}>{t.story}</button>
     </span>
   );
 
-  const connClass = status.startsWith('エラー') || status === '接続エラー' ? 'err' : isConnected ? 'on' : '';
+  const connClass = status.startsWith(t.errorPrefix) || status === t.connError ? 'err' : isConnected ? 'on' : '';
   const connText = connClass === 'err' ? status
-    : isConnected ? `${recording ? '録音中' : '接続中'} · ${asr === 'nemotron' ? 'Nemotron' : 'Deepgram'}`
+    : isConnected ? `${recording ? t.recordingState : t.connectedState} · ${asr === 'nemotron' ? 'Nemotron' : 'Deepgram'}`
     : status;
 
   return (
@@ -226,8 +254,16 @@ export default function MeetingApp() {
           onRecordingChange={setRecording}
           enableSystemAudio
           defaultSource="system"
+          strings={t}
         />
-        <div className="seg" title="音声認識エンジン">
+        <div className="seg" title={t.langTitle}>
+          <span className="k">{t.langKey}</span>
+          {LANG_PAIRS.map(({ value, label }) => (
+            <button key={value} className={langPair === value ? 'on' : ''} disabled={recording}
+              onClick={() => selectLangPair(value)}>{label}</button>
+          ))}
+        </div>
+        <div className="seg" title={t.asrTitle}>
           <span className="k">ASR</span>
           {([
             { value: 'deepgram', label: 'Deepgram' },
@@ -238,30 +274,29 @@ export default function MeetingApp() {
         </div>
         <span className={`conn ${connClass}`} title={status}>{connText}</span>
         <span className="help">
-          <button className="icon" onClick={() => setHelpOpen((v) => !v)} title="使い方" aria-label="使い方">?</button>
+          <button className="icon" onClick={() => setHelpOpen((v) => !v)} title={t.helpTitle} aria-label={t.helpTitle}>?</button>
           {helpOpen && (
             <div className="pop">
-              <b>会議の音声</b>：● を押したら、共有画面で「画面全体」を選び「システム音声を共有」をオン（Zoom / Teams アプリでも可）。
-              ブラウザ会議ならその「タブ」を選び「タブの音声を共有」をオン。<br />
-              <b>ASR</b>：Nemotron は GX10 で動く音声認識（英語のみ）。何も出ないときは Deepgram に切り替え。<br />
-              <a href="#" onClick={() => setTimeout(() => location.reload())}>従来の画面へ</a>
+              <b>{t.helpAudio[0]}</b>{t.helpAudio[1]}<br />
+              <b>{t.helpAsr[0]}</b>{t.helpAsr[1]}<br />
+              <a href="#" onClick={() => setTimeout(() => location.reload())}>{t.legacy}</a>
             </div>
           )}
         </span>
-        <button className="icon" onClick={toggleTheme} title="白 / 紺 を切り替え" aria-label="テーマ切り替え">
+        <button className="icon" onClick={toggleTheme} title={t.themeTitle} aria-label={t.themeAria}>
           {theme === 'light' ? '☾' : '☀'}
         </button>
-        <button className="icon" onClick={clearAll} title="クリア" aria-label="クリア">⌫</button>
+        <button className="icon" onClick={clearAll} title={t.clear} aria-label={t.clear}>⌫</button>
         {isMiniWindowSupported() && (
           <button className={`icon${mini.win ? ' on' : ''}`} onClick={mini.win ? mini.close : mini.open}
-            title={mini.win ? '小窓を閉じる' : '字幕と意図を、いつも最前面の小窓に出す'} aria-label="小窓">⧉</button>
+            title={mini.win ? t.miniClose : t.miniOpen} aria-label={t.miniAria}>⧉</button>
         )}
       </div>
 
       {/* Mini window: subtitle + need only, always on top over the meeting app */}
       <MiniWindow win={mini.win}>
         <MiniView theme={theme} now={nowState} recording={recording} insight={insight} insFresh={insFresh}
-          history={history} turnEnds={turnEnds} stories={stories} />
+          history={history} turnEnds={turnEnds} stories={stories} t={t} />
       </MiniWindow>
 
       <main className={tab === 'story' ? 'tab-story' : ''}>
@@ -273,24 +308,24 @@ export default function MeetingApp() {
 
         <aside className={`panel ins${insOpen ? ' open' : ''}${insFresh ? ' fresh' : ''}`}>
           <div className="ins-body">
-            {!insight && <p className="thinking">💡 相手が話し終えると、ここに相手の意図と返事の案が出ます</p>}
+            {!insight && <p className="thinking">{t.insightEmpty}</p>}
             {insight && (
               <>
                 <div className="lead">
-                  <div className="situation">💡 相手の意図{insight.situation && ` · 相手は${insight.situation}`}</div>
+                  <div className="situation">{t.insightHead}{insight.situation && t.situation(insight.situation)}</div>
                   <div className={`need${insight.ready ? '' : ' not-ready'}`}>
                     {insight.need}
-                    {!insight.ready && <div className="thinking">（まだ前置きの段階かもしれません）</div>}
+                    {!insight.ready && <div className="thinking">{t.notReady}</div>}
                   </div>
                   <button className="toggle" onClick={() => setInsOpen((v) => !v)}>
-                    {insOpen ? '返事の案を閉じる' : '返事の案を見る'}
+                    {insOpen ? t.repliesClose : t.repliesOpen}
                   </button>
                 </div>
                 <div className="more">
-                  <div className="label">返事の案</div>
+                  <div className="label">{t.replies}</div>
                   {insight.replies.length > 0
                     ? insight.replies.map((r, i) => <div key={i} className="reply">{r}</div>)
-                    : <p className="thinking">{insight.complete ? '—' : '考え中…'}</p>}
+                    : <p className="thinking">{insight.complete ? '—' : t.thinking}</p>}
                 </div>
               </>
             )}
@@ -298,17 +333,17 @@ export default function MeetingApp() {
         </aside>
 
         <section className="panel histp">
-          <h2><span className="pc-title">これまでの会話（新しい順）</span>{tabs}</h2>
+          <h2><span className="pc-title">{t.historyTitle}</span>{tabs}</h2>
           {!follow && (
             <button className="jump" onClick={() => { setFollow(true); histRef.current?.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-              ↑ 最新へ
+              {t.latest}
             </button>
           )}
           <div className="hist" ref={histRef} onScroll={onHistScroll}>
-            {history.length === 0 && <p className="empty">確定した訳がここに新しい順で並びます</p>}
+            {history.length === 0 && <p className="empty">{t.historyEmpty}</p>}
             {history.map((f) => (
               <div key={f.seq}>
-                {turnEnds.includes(f.seq) && <div className="turn">── 相手が話し終えました</div>}
+                {turnEnds.includes(f.seq) && <div className="turn">{t.turnEnd}</div>}
                 <div className="h" data-seq={f.seq}>
                   <div className="ja">{f.text}</div>
                   <div className="en">{f.source}</div>
@@ -319,16 +354,16 @@ export default function MeetingApp() {
         </section>
 
         <section className="panel storyp">
-          <h2><span className="pc-title">📖 あらすじ</span>{tabs}</h2>
+          <h2><span className="pc-title">{t.storyTitle}</span>{tabs}</h2>
           <div className="story">
-            {stories.length === 0 && <p className="empty">会話がある程度たまると、区切りごとの要約がここに並びます</p>}
+            {stories.length === 0 && <p className="empty">{t.storyEmpty}</p>}
             {stories.map((st) => (
               <div key={st.index} className={`st${st.done ? '' : ' progress'}`}>
                 <div className="top">
                   <time>{fmtTime(st.start)}</time>
                   {st.done
-                    ? <button className="title" onClick={() => jumpTo(st.first)} title="この区切りの会話へ">{st.title}</button>
-                    : <span className="title">進行中（{st.n}文）…</span>}
+                    ? <button className="title" onClick={() => jumpTo(st.first)} title={t.storyJump}>{st.title}</button>
+                    : <span className="title">{t.storyProgress(st.n)}</span>}
                 </div>
                 {st.done && st.summary && <div className="sum">{st.summary}</div>}
               </div>
@@ -345,9 +380,9 @@ export default function MeetingApp() {
  * Short window: subtitle + need only. Taller than 300px (CSS media query in the PiP window):
  * also 会話 / あらすじ tabs below, newest first, Japanese only to fit the narrow window.
  */
-function MiniView({ theme, now, recording, insight, insFresh, history, turnEnds, stories }: {
+function MiniView({ theme, now, recording, insight, insFresh, history, turnEnds, stories, t }: {
   theme: Theme; now: NowState; recording: boolean; insight: Insight | null; insFresh: boolean;
-  history: FinalLine[]; turnEnds: number[]; stories: StoryChunk[];
+  history: FinalLine[]; turnEnds: number[]; stories: StoryChunk[]; t: Strings;
 }) {
   const [tab, setTab] = useState<'conv' | 'story'>('conv');
   const [follow, setFollow] = useState(true);
@@ -380,45 +415,45 @@ function MiniView({ theme, now, recording, insight, insFresh, history, turnEnds,
         <div className="state">{now.label}</div>
         <div className="ja-wrap">
           <div className={`ja${now.placeholder ? ' placeholder' : ''}`}>
-            {recording || !now.placeholder ? now.ja : '元の画面の ● で開始します'}
+            {recording || !now.placeholder ? now.ja : t.miniStartHint}
           </div>
         </div>
       </section>
       <div className={`mini-need${insFresh ? ' fresh' : ''}${insight && !insight.ready ? ' not-ready' : ''}`}
         title={insight?.need}>
-        💡 {insight ? insight.need : '相手が話し終えると、ここに意図が出ます'}
+        💡 {insight ? insight.need : t.miniNeedEmpty}
       </div>
 
       <section className="panel mini-more">
         <div className="mini-tabs">
-          <button className={tab === 'conv' ? 'on' : ''} onClick={() => setTab('conv')}>会話</button>
-          <button className={tab === 'story' ? 'on' : ''} onClick={() => setTab('story')}>あらすじ</button>
+          <button className={tab === 'conv' ? 'on' : ''} onClick={() => setTab('conv')}>{t.conv}</button>
+          <button className={tab === 'story' ? 'on' : ''} onClick={() => setTab('story')}>{t.story}</button>
         </div>
         {tab === 'conv' && !follow && (
           <button className="jump" onClick={() => { setFollow(true); histRef.current?.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-            ↑ 最新へ
+            {t.latest}
           </button>
         )}
         {tab === 'conv' ? (
           <div className="hist" ref={histRef} onScroll={onHistScroll}>
-            {history.length === 0 && <p className="empty">確定した訳がここに新しい順で並びます</p>}
+            {history.length === 0 && <p className="empty">{t.historyEmpty}</p>}
             {history.map((f) => (
               <div key={f.seq}>
-                {turnEnds.includes(f.seq) && <div className="turn">── 相手が話し終えました</div>}
+                {turnEnds.includes(f.seq) && <div className="turn">{t.turnEnd}</div>}
                 <div className="h" data-seq={f.seq}><div className="ja">{f.text}</div></div>
               </div>
             ))}
           </div>
         ) : (
           <div className="story">
-            {stories.length === 0 && <p className="empty">会話がある程度たまると、区切りごとの要約がここに並びます</p>}
+            {stories.length === 0 && <p className="empty">{t.storyEmpty}</p>}
             {stories.map((st) => (
               <div key={st.index} className={`st${st.done ? '' : ' progress'}`}>
                 <div className="top">
                   <time>{fmtTime(st.start)}</time>
                   {st.done
-                    ? <button className="title" onClick={() => jumpTo(st.first)} title="この区切りの会話へ">{st.title}</button>
-                    : <span className="title">進行中（{st.n}文）…</span>}
+                    ? <button className="title" onClick={() => jumpTo(st.first)} title={t.storyJump}>{st.title}</button>
+                    : <span className="title">{t.storyProgress(st.n)}</span>}
                 </div>
                 {st.done && st.summary && <div className="sum">{st.summary}</div>}
               </div>
@@ -444,8 +479,11 @@ function fmtTime(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s2).padStart(2, '0')}`;
 }
 
-function sameUtterance(a: string, b: string): boolean {
-  const head = (s: string) => s.trim().toLowerCase().split(/\s+/).slice(0, 3).join(' ');
+/** Same utterance = same first 3 words (CJK: first 6 characters, there are no spaces). */
+function sameUtterance(a: string, b: string, cjk = false): boolean {
+  const head = cjk
+    ? (s: string) => s.replace(/\s+/g, '').slice(0, 6)
+    : (s: string) => s.trim().toLowerCase().split(/\s+/).slice(0, 3).join(' ');
   return head(a) !== '' && head(a) === head(b);
 }
 
