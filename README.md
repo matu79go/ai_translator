@@ -1,6 +1,6 @@
 # AI Translator — fully local real-time meeting translation
 
-Live Japanese subtitles for English online meetings, plus the speaker's intent, reply ideas, and a running synopsis. **Speech recognition and the LLM both run on your own GPU machine.** No cloud API is required, and meeting audio and text never leave your network.
+Live subtitles for online meetings, English → Japanese or Japanese → English, plus the speaker's intent, reply ideas, and a running synopsis. **Speech recognition and the LLM both run on your own GPU machine.** No cloud API is required, and meeting audio and text never leave your network.
 
 Built only on open models:
 
@@ -11,11 +11,13 @@ Built only on open models:
 
 *The always-on-top mini window translating a NASA press conference (Artemis II, 2026-04-16; NASA footage). The audio was streamed in real time through the local pipeline, and the actual output was overlaid on the video.*
 
+**New in v2.1:** Japanese → English. Switch the direction with **EN→JA | JA→EN**; with JA→EN the subtitles, intent, reply ideas, synopsis, and UI are all in English. Still fully local: Nemotron transcribes Japanese too.
+
 ## Features
 
 | Feature | What it does | Speed (measured) |
 |---|---|---|
-| **Real-time translation** | Translates the other speaker into Japanese while they are still talking | First token in ~0.1 s, full line in ~0.4 s |
+| **Real-time translation** | Translates the other speaker while they are still talking (English → Japanese or Japanese → English) | First token in ~0.1 s, full line in ~0.4 s |
 | **Speaker intent + reply ideas** | When the other speaker finishes, shows their stance, what they want, and two replies you could give | ~2 s after they stop |
 | **Synopsis** | Summarizes the conversation section by section | ~2 s per section |
 | **Mini window** | One click opens an always-on-top window with just the subtitle and intent, over Zoom / Teams / Meet. Make it taller to see the history and synopsis | — |
@@ -130,12 +132,13 @@ Open `http://<backend>:8000/#meeting`. Browsers allow microphone and screen-audi
 
 ## Usage
 
-1. Choose the input: **会議の音声** (meeting audio) or **マイク** (microphone).
+1. Choose the direction under **言語 / Lang**: **EN→JA** or **JA→EN** (not while recording). The UI follows the target language: Japanese for EN→JA, English for JA→EN.
+1. Choose the input: **会議の音声 / Meeting audio** or **マイク / Mic**.
 2. Choose the ASR: **Nemotron** (local) or **Deepgram** (cloud).
 3. Press **●**. For meeting audio, pick **Entire screen** and turn on **Share system audio** in the browser dialog.
 4. Press **⧉** to open the mini window. Drag it over your meeting app. Make it taller than 300 px to show the conversation history and synopsis tabs.
 
-The UI is in Japanese. Source language is English and the target is Japanese.
+Nemotron is multilingual. Only English and Japanese are exposed in the UI; adding a language means adding it to the language maps in `backend/main.py` and `frontend/src/i18n.ts`.
 
 ## Limitations
 

@@ -1,6 +1,7 @@
 # 仕様書：AI Translator — オンライン会議アシスト（ローカルLLM版）
 
-- 状態：**稼働中**（GX10 で常時起動。2026-11-04 時点の仕様、v2.0.0 として GitHub で公開）
+- 状態：**稼働中**（GX10 で常時起動。2026-11-05 時点の仕様。v2.0.0 として GitHub で公開、日→英は 2026-11-05 に追加）
+- 日本語→英語の設計と確認の記録：[ja-to-en.md](ja-to-en.md)
 - 開発の経緯・計測の詳細・不具合と修正の記録：[meeting-assist-local-history.md](meeting-assist-local-history.md)（以下「経緯」）
 - 運用手順：[deploy/gx10/README.md](../../deploy/gx10/README.md)
 - 画面の比較案（採用は案B）：[docs/mock/](../mock/index.html)
@@ -17,7 +18,7 @@
 | **相手の意図と返事の案** | 相手が話し終えたとき、相手の立場・意図・返事の案2つを表示 | 話し終えてから約2秒で意図 |
 | **あらすじ** | 会話を区切りごとに要約して積み重ね、流れを追えるようにする | 区切りが閉じてから約2秒 |
 
-- 原文は英語、訳は日本語（他の言語の組み合わせは対象外。Nemotron は英語のみ）
+- 向きは **英→日（既定）と日→英** を画面で切り替える（§9）。画面・意図・あらすじの言語は訳の言語に合わせる（日→英なら英語）。Nemotron は多言語のモデルで、日本語にも対応している（2026-11-04 までは英語のみと誤解していた）
 - LLM はすべてローカル（GX10 の Gemma 4）。ASR は Deepgram（クラウド）と Nemotron（GX10）を画面で切り替える。Nemotron を選べば**音声も外に出ない**
 - 旧来の「意図の先行表示」（intent_label / dialogue_act）は、この画面では使わない（経緯 §2）
 
@@ -69,7 +70,9 @@ ai-translator.service  uvicorn 127.0.0.1:8100（backend/main.py。ビルド済�
 選択は接続URL（`/ws/audio?asr=nemotron`）で最初から指定し、録音中は `set_asr` で張り直す。選択はブラウザに保存（`meetingAssist.asr`）。
 
 ### 4.2 Nemotron ASR サーバー（`asr_server/asr_server.py`）
-- Transformers 版の `AutoModelForRNNT`。区切り **320ms**（`--lookahead 3`）、言語 `en-US`、fp32
+- Transformers 版の `AutoModelForRNNT`。区切り **320ms**（`--lookahead 3`）、fp32
+- 言語は接続ごとに URL で選ぶ（`/ws?language=ja-JP`。なければ `--language` の `en-US`）。対応していない言語なら接続を断る
+- 日本語・中国語（単語の間に空白がない言語）：途中結果は全文を送る（トークンが1〜2文字ずつ伸びるだけなので）、空白を取り除く、句読点に `。、？！` を含める、長い区間は2文字を1語として数える
 - 接続ごとに1本の `generate()` を別スレッドで動かし、届いた音声を 320ms ごとに渡す。文字へは `processor.decode` で戻す（`tokenizer.decode` は同じトークンの連続をまとめてしまう）
 - **接続ごとにモデルを1つ割り当てる**（`--streams 2`、GPU 約5.1GB）。1つのモデルを同時に使うと壊れるため。上限を超えた接続には `{"type":"Error","message":"…同時に 2 接続までです"}` を返す
 - Nemotron には確定の合図がないので、サーバーで判定する（Deepgram と同じ形式で返す）
@@ -82,6 +85,7 @@ ai-translator.service  uvicorn 127.0.0.1:8100（backend/main.py。ビルド済�
 ### 4.3 発話の組み立て（`TranscriptionManager`、`gx10` モードのみ）
 ASR の確定結果は文の途中で切れることがある（"…and my task" / "was to source a supplier"）。断片ごとに訳すと崩れるので、**断片をつないで「発話」にしてから**確定訳を作る。
 - 途中：つないだ断片＋今の途中結果を、途中の訳として訳す
+- 日本語・中国語は空白なしでつなぎ、**2文字を1語として数える**（下の語数、§5 の5語、§9 のちらつき防止は最初の6文字）。ASR の結果の、日本語の文字の隣の空白は取り除く（`normalize_asr_text` / `join_text` / `text_units`）
 - 区切る条件（どれか）
   - `UtteranceEnd`（単語が1秒途切れた）
   - `speech_final`（短い間）で、つないだ文が **12語以上**（`UTTERANCE_FLUSH_MIN_WORDS`）。短い断片（"so"、"and it was"）は次につなぐ
@@ -121,7 +125,8 @@ ASR の確定結果は文の途中で切れることがある（"…and my task"
 
 ## 8. 通信の形式
 
-### 8.1 ブラウザ → バックエンド（`/ws/audio?asr=deepgram|nemotron`）
+### 8.1 ブラウザ → バックエンド（`/ws/audio?asr=deepgram|nemotron&src=en|ja&tgt=ja|en`）
+- `src` / `tgt`：翻訳の向き（既定は `en` / `ja`）。接続の最初から決める（ASR の言語もこれで決まる）
 - バイナリ：16kHz・16bit・モノラル PCM（4096サンプルずつ）
 - テキスト（JSON）：`{"type":"set_model","model":"gx10"}`（会議画面は接続直後に必ず送る）、`{"type":"set_asr","engine":"…"}`、`{"type":"stop"}` など
 
@@ -171,6 +176,7 @@ ASR の確定結果は文の途中で切れることがある（"…and my task"
   - 高さ **300px 以上** にのばすと、「会話 ／ あらすじ」のタブが下に出る（会話は日本語だけ、新しい順。見出しを押すとその行へ移動）
   - 訳が小窓に収まらないときは新しい方を見せ、上の端で切れた行は薄くぼかす（`mask-image`）
   - 対応していないブラウザ（スマホなど）ではボタンを出さない
+- **向きの切り替え**（上の行の「言語 / Lang」：EN→JA | JA→EN）：録音中は切り替えられない。切り替えると履歴・意図・あらすじを消す（2つの言語が混ざらないように）。選んだ向きはブラウザに保存（`meetingAssist.langPair`）。画面の文言は `frontend/src/i18n.ts` にまとめ、訳の言語に合わせて日本語か英語にする
 - 「?」に手順の説明と「従来の画面へ」。旧画面（`ExperimentalApp`）は `/` のまま残している
 
 ## 10. 設定値
@@ -191,7 +197,7 @@ ASR の確定結果は文の途中で切れることがある（"…and my task"
 コード内の固定値：意図の発火 `UtteranceEnd`＋0.5秒、意図の文脈30発話、翻訳の debounce 300ms・最小5語、保険の区切り1.5秒。
 
 ### Nemotron ASR サーバー（起動引数）
-`--port 8092`、`--lookahead 3`（320ms）、`--final-silence 0.7`、`--utterance-end 1.0`、`--long-segment-words 25`、`--streams 2`、`--language en-US`
+`--port 8092`、`--lookahead 3`（320ms）、`--final-silence 0.7`、`--utterance-end 1.0`、`--long-segment-words 25`、`--streams 2`、`--language en-US`（接続 URL で言語を指定しないときの既定）
 
 ## 11. 運用
 
@@ -234,6 +240,7 @@ ASR の確定結果は文の途中で切れることがある（"…and my task"
 | `backend/main.py` | `gx10` モード：`IntentEstimator._call_gx10`（翻訳）、`SummaryGenerator._generate_insight_gx10`（意図）、`StorySummarizer`（あらすじ）、`TranscriptionManager`（ASR 切り替え・発話の組み立て）、プロンプト `build_translation_only_prompt` / `build_insight_prompt` / `build_story_prompt` |
 | `asr_server/asr_server.py` | Nemotron ASR サーバー |
 | `frontend/src/MeetingApp.tsx`, `meeting.css` | 会議画面 |
+| `frontend/src/i18n.ts` | 画面の文言（日本語・英語）と翻訳の向き |
 | `frontend/src/components/AudioRecorder.tsx` | 音声入力（`variant="compact"`） |
 | `frontend/src/hooks/useMiniWindow.ts`, `components/MiniWindow.tsx` | 小窓（Document Picture-in-Picture） |
 | `frontend/src/hooks/useWebSocket.ts` | メッセージの型 |
