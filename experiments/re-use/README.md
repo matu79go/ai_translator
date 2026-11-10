@@ -1,44 +1,46 @@
-# NVIDIA NemotronLabs RE-USE の雑音除去を測る
+# Measuring NVIDIA NemotronLabs RE-USE noise reduction
 
-NVIDIA の雑音除去モデル [NVIDIA NemotronLabs RE-USE](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE)(9.6M パラメータ、約 40MB)が、どれだけ雑音を消すかを測ったスクリプトと結果です。設計と結果の詳細は [docs/designs/re-use-denoise-experiment.md](../../docs/designs/re-use-denoise-experiment.md)。
+Scripts and results for measuring how much noise [NVIDIA NemotronLabs RE-USE](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE) removes. RE-USE is a speech enhancement model with only 9.6M parameters (about 40 MB). Design notes and full results (in Japanese): [docs/designs/re-use-denoise-experiment.md](../../docs/designs/re-use-denoise-experiment.md).
 
-## 結果(2026-11-10、ASUS Ascent GX10 1 台)
+## Results (2026-11-10, one ASUS Ascent GX10)
 
-| | 処理する前 | RE-USE の後 |
+| | Before | After RE-USE |
 |---|---|---|
-| 雑音を 6 倍にした音声:声と雑音の差(SNR) | −8.6 dB | +11.9〜+13.7 dB |
-| 同:話していない間の音量 | −14〜−19 dBFS | −50〜−53 dBFS |
-| VoiceBank-DEMAND 824 本:PESQ / STOI / SI-SDR | 1.97 / 0.921 / 8.4 dB | 3.23 / 0.962 / 19.2 dB |
+| Noise boosted 6×: speech-to-noise ratio (SNR) | −8.6 dB | +11.9 to +13.7 dB |
+| Same: level during pauses in speech | −14 to −19 dBFS | −50 to −53 dBFS |
+| VoiceBank-DEMAND test set (824 clips): PESQ / STOI / SI-SDR | 1.97 / 0.921 / 8.4 dB | 3.23 / 0.962 / 19.2 dB |
 
-数字は `results/` にあります。
+Even when the noise is louder than the voice, the voice ends up 12–14 dB above the remaining noise, and the pauses become quieter than in the original clean recording. Raw numbers are in `results/`.
 
-## 用意する物(このリポジトリには入れていません)
-- モデル:[nvidia/NVIDIA-NemotronLabs-RE-USE](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE)(OpenMDW-1.1)。リポジトリ一式を `model/` に置く
-- 試験用の音声:[VoiceBank-DEMAND](https://datashare.ed.ac.uk/handle/10283/2791)(CC BY 4.0)の `clean_testset_wav.zip` と `noisy_testset_wav.zip`
-- `mamba-ssm`(CUDA でビルド)、PyTorch、soundfile、librosa、`pesq`、`pystoi`。NVIDIA の GPU が必要
+## What you need (not included in this repository)
+- Model: [nvidia/NVIDIA-NemotronLabs-RE-USE](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE) (OpenMDW-1.1). Put the whole repository in `model/`
+- Test audio: [VoiceBank-DEMAND](https://datashare.ed.ac.uk/handle/10283/2791) (CC BY 4.0), `clean_testset_wav.zip` and `noisy_testset_wav.zip`
+- `mamba-ssm` built with CUDA, PyTorch, soundfile, librosa, `pesq`, `pystoi`. An NVIDIA GPU is required
 
-## 手順
+## Steps
 ```bash
-# 1. 雑音を消す(フォルダ内の wav を一括処理。1 本ごとの処理時間も記録)
+# 1. Remove noise from every wav in a folder (also records processing time per file)
 python enhance.py --model_dir model --in_dir data/vbd/noisy_testset_wav --out_dir out/vbd_48k
 
-# 2. 正解と比べて PESQ・STOI・SI-SDR を出す(16kHz で採点)
+# 2. Score against the clean reference: PESQ, STOI, SI-SDR (scored at 16 kHz)
 python score.py --clean data/vbd/clean_testset_wav --test noisy=data/vbd/noisy_testset_wav --test reuse=out/vbd_48k --out scores.json
 
-# 3. 雑音を大きくした音声を作り、雑音を消して、SNR と話していない間の音量を測る
+# 3. Make louder-noise versions, remove the noise, and measure SNR and the level during pauses
 python make_hard.py data/vbd data/hard p232_022 p257_003 --gains 1 3 6
 python enhance.py --model_dir model --in_dir data/hard/noisy --out_dir out/hard
 python noise_floor.py data/hard/clean data/hard/noisy out/hard p232_022_x6 p257_003_x6
 
-# 4. 聞き比べ用の素材(音量をそろえた wav とスペクトログラム)を作る
+# 4. Build listening material (loudness-matched wav files and spectrograms)
 python build_listen.py pairs_listen.json out/listen
 ```
 
-| ファイル | 中身 |
+| File | What it does |
 |---|---|
-| `enhance.py` | RE-USE で一括処理。NVIDIA の `inference.py` と同じ処理を、soundfile で読み書きする形にした |
-| `score.py` | PESQ・STOI・SI-SDR |
-| `make_hard.py` | 雑音(雑音入り − 元の音声)を k 倍して足した音声を作る |
-| `noise_floor.py` | SNR と、話していない間の音量 |
-| `build_listen.py` | 聞き比べ用の素材 |
-| `ami_wer.py` | AMI 会議音声での音声認識の誤り率(Nemotron ASR の前に挟んだときの比較に使用) |
+| `enhance.py` | Batch noise removal with RE-USE. Same processing as NVIDIA's `inference.py`, reading and writing audio with soundfile |
+| `score.py` | PESQ, STOI, SI-SDR |
+| `make_hard.py` | Adds the noise (noisy − clean) back k times louder |
+| `noise_floor.py` | SNR and the level during pauses in speech |
+| `build_listen.py` | Listening material |
+| `ami_wer.py` | Word error rate on AMI meeting audio (used to compare Nemotron ASR with and without RE-USE in front) |
+
+Notes: the comments in the scripts are in Japanese. The listening samples are derived from VoiceBank-DEMAND (CC BY 4.0).
