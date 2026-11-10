@@ -44,3 +44,6 @@ python build_listen.py pairs_listen.json out/listen
 | `ami_wer.py` | Word error rate on AMI meeting audio (used to compare Nemotron ASR with and without RE-USE in front) |
 
 Notes: the comments in the scripts are in Japanese. The listening samples are derived from VoiceBank-DEMAND (CC BY 4.0).
+
+## Listening samples
+`samples/` holds the audio used in the blog post (loudness-matched, 128 kbps mono MP3) and a standalone listening page (`samples/demo/index.html`). Each set has the noisy input, the output of RE-USE, and the clean original. The noise was boosted 6× so the noise is louder than the voice; the "x1" files keep the original noise level. Derived from VoiceBank-DEMAND (CC BY 4.0).

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RE-USE 聞き比べ</title>
+<style>
+  :root { --bg:#faf9f6; --card:#fff; --line:#e8e4dc; --text:#222; --sub:#666; --accent:#3987e5; --warn:#c0492f; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16181c; --card:#1f2228; --line:#30343c; --text:#e8e8e8; --sub:#9aa; } }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 system-ui, "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:17px; margin:36px 0 4px; }
+  p.sub, p.lead { color:var(--sub); margin:0 0 12px; font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:12px 0; }
+  .card h3 { font-size:15px; margin:0 0 2px; } .note { color:var(--sub); font-size:13px; margin:0 0 10px; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; }
+  .col span { display:block; font-size:13px; font-weight:600; margin-bottom:4px; }
+  .col.removed span { color:var(--warn); }
+  .col img { width:100%; height:110px; display:block; border-radius:6px; margin-top:6px; image-rendering:auto; }
+  audio { width:100%; }
+  ul { padding-left:20px; color:var(--sub); font-size:14px; margin:4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NVIDIA RE-USE 聞き比べ</h1>
+  <p class="sub">左から、処理する前・雑音を消した後・雑音のない元の録音。音量はそろえてあります。下の図は音を目で見えるようにした物で、明るい所ほど音が強いことを表します。イヤホンでの視聴をおすすめします。</p>
+
+  <h2>騒がしい場所の雑音が入った英語の録音</h2>
+  <p class="lead">公開の試験用の音声(VoiceBank-DEMAND、CC BY 4.0)に入っている雑音を 6 倍に大きくした物と、元のままの物です。</p>
+  <div id="hard"></div>
+</main>
+<script src="items.js"></script>
+<script>
+function col(id, kind, title, img, cls = "") {
+  return `<div class="col ${cls}"><span>${title}</span><audio controls preload="none" src="audio/${id}-${kind}.mp3"></audio>${img ? `<img alt="" src="audio/${id}-${kind}.png">` : ""}</div>`;
+}
+for (const g of ["hard"]) {
+  document.getElementById(g).innerHTML = ITEMS.filter(m => m.group === g).map(m => `
+    <div class="card"><h3>${m.label}</h3>
+      
+      <div class="row">
+        ${col(m.id, "noisy", "処理する前", true)}
+        ${col(m.id, "enhanced", "雑音を消した後", true)}
+        ${m.has_clean ? col(m.id, "clean", "雑音のない元の録音", true) : ""}
+        
+      </div></div>`).join("");
+}
+</script>
+</body>
+</html>
