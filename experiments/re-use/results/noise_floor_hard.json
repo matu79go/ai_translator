@@ -1,0 +1,56 @@
+[
+ {
+  "id": "p232_022_x1",
+  "snr_before_db": 7.0,
+  "snr_after_db": 18.8,
+  "quiet_gap_vs_peak_db": 23.3,
+  "quiet_level_before_dbfs": -32.9,
+  "quiet_level_after_dbfs": -51.2,
+  "quiet_level_clean_dbfs": -49.1
+ },
+ {
+  "id": "p232_022_x3",
+  "snr_before_db": -2.5,
+  "snr_after_db": 14.7,
+  "quiet_gap_vs_peak_db": 23.3,
+  "quiet_level_before_dbfs": -23.5,
+  "quiet_level_after_dbfs": -51.5,
+  "quiet_level_clean_dbfs": -49.1
+ },
+ {
+  "id": "p232_022_x6",
+  "snr_before_db": -8.6,
+  "snr_after_db": 11.9,
+  "quiet_gap_vs_peak_db": 23.3,
+  "quiet_level_before_dbfs": -19.0,
+  "quiet_level_after_dbfs": -52.8,
+  "quiet_level_clean_dbfs": -50.7
+ },
+ {
+  "id": "p257_003_x1",
+  "snr_before_db": 7.0,
+  "snr_after_db": 18.1,
+  "quiet_gap_vs_peak_db": 27.5,
+  "quiet_level_before_dbfs": -29.7,
+  "quiet_level_after_dbfs": -51.1,
+  "quiet_level_clean_dbfs": -44.5
+ },
+ {
+  "id": "p257_003_x3",
+  "snr_before_db": -2.5,
+  "snr_after_db": 15.7,
+  "quiet_gap_vs_peak_db": 27.5,
+  "quiet_level_before_dbfs": -20.3,
+  "quiet_level_after_dbfs": -51.1,
+  "quiet_level_clean_dbfs": -44.5
+ },
+ {
+  "id": "p257_003_x6",
+  "snr_before_db": -8.6,
+  "snr_after_db": 13.7,
+  "quiet_gap_vs_peak_db": 27.5,
+  "quiet_level_before_dbfs": -14.3,
+  "quiet_level_after_dbfs": -49.8,
+  "quiet_level_clean_dbfs": -44.5
+ }
+]

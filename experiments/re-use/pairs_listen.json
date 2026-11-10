@@ -1,0 +1,83 @@
+[
+ {
+  "id": "hard-p232_022_x6",
+  "group": "hard",
+  "label": "p232_022：雑音を 6 倍（雑音の方が 8.6dB 大きい）・男性",
+  "note": "PESQ 1.05 → 2.44、STOI 0.775 → 0.949",
+  "noisy": "data/hard/noisy/p232_022_x6.wav",
+  "enhanced": "out/hard/p232_022_x6.wav",
+  "clean": "data/hard/clean/p232_022_x6.wav"
+ },
+ {
+  "id": "hard-p257_003_x6",
+  "group": "hard",
+  "label": "p257_003：雑音を 6 倍（雑音の方が 8.6dB 大きい）・女性",
+  "note": "PESQ 1.06 → 2.15、STOI 0.785 → 0.934",
+  "noisy": "data/hard/noisy/p257_003_x6.wav",
+  "enhanced": "out/hard/p257_003_x6.wav",
+  "clean": "data/hard/clean/p257_003_x6.wav"
+ },
+ {
+  "id": "hard-p232_022_x1",
+  "group": "hard",
+  "label": "p232_022：元のまま（SNR 7dB）・男性",
+  "note": "PESQ 1.64 → 3.55、STOI 0.970 → 0.987",
+  "noisy": "data/hard/noisy/p232_022_x1.wav",
+  "enhanced": "out/hard/p232_022_x1.wav",
+  "clean": "data/hard/clean/p232_022_x1.wav"
+ },
+ {
+  "id": "hard-p257_003_x1",
+  "group": "hard",
+  "label": "p257_003：元のまま（SNR 7dB）・女性",
+  "note": "PESQ 1.77 → 3.41、STOI 0.950 → 0.983",
+  "noisy": "data/hard/noisy/p257_003_x1.wav",
+  "enhanced": "out/hard/p257_003_x1.wav",
+  "clean": "data/hard/clean/p257_003_x1.wav"
+ },
+ {
+  "id": "vbd-p257_083",
+  "group": "bad",
+  "label": "p257_083：もともときれい → 悪化",
+  "note": "PESQ 4.02 → 2.10、STOI 0.998 → 0.944",
+  "noisy": "data/vbd/noisy_testset_wav/p257_083.wav",
+  "enhanced": "out/vbd_48k/p257_083.wav",
+  "clean": "data/vbd/clean_testset_wav/p257_083.wav"
+ },
+ {
+  "id": "vbd-p257_337",
+  "group": "bad",
+  "label": "p257_337：聞き取りやすさが下がった",
+  "note": "PESQ 2.16 → 2.68、STOI 0.913 → 0.812",
+  "noisy": "data/vbd/noisy_testset_wav/p257_337.wav",
+  "enhanced": "out/vbd_48k/p257_337.wav",
+  "clean": "data/vbd/clean_testset_wav/p257_337.wav"
+ },
+ {
+  "id": "ami-a",
+  "group": "ami",
+  "label": "AMI EN2002a（4人の打ち合わせ）1:00〜1:20",
+  "noisy": "../nemotron-asr/ami_eval/ami_EN2002a.wav",
+  "enhanced": "out/ami_c5/ami_EN2002a.wav",
+  "start": 60,
+  "dur": 20
+ },
+ {
+  "id": "ami-b",
+  "group": "ami",
+  "label": "AMI EN2002b（話者の重なりが多い）0:30〜0:50",
+  "noisy": "../nemotron-asr/ami_eval/ami_EN2002b.wav",
+  "enhanced": "out/ami_c5/ami_EN2002b.wav",
+  "start": 30,
+  "dur": 20
+ },
+ {
+  "id": "ami-c",
+  "group": "ami",
+  "label": "AMI EN2002c（重なりが少ない）1:40〜2:00",
+  "noisy": "../nemotron-asr/ami_eval/ami_EN2002c.wav",
+  "enhanced": "out/ami_c5/ami_EN2002c.wav",
+  "start": 100,
+  "dur": 20
+ }
+]
